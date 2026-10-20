@@ -39,6 +39,36 @@ id = "core.events.envelope_round_trip"
 test = "crates/silyn-core/src/event.rs::envelope_round_trips"
 required = true
 
+[[gate]]
+id = "storage.migrations_apply"
+test = "crates/silyn-storage/tests/storage.rs::migrations_apply_once"
+required = true
+
+[[gate]]
+id = "storage.fts5_available"
+test = "crates/silyn-storage/tests/storage.rs::fts5_is_available"
+required = true
+
+[[gate]]
+id = "storage.foreign_keys_enforced"
+test = "crates/silyn-storage/tests/storage.rs::foreign_keys_are_enforced"
+required = true
+
+[[gate]]
+id = "storage.records_round_trip"
+test = "crates/silyn-storage/tests/storage.rs::records_round_trip"
+required = true
+
+[[gate]]
+id = "storage.duplicate_ids_rejected"
+test = "crates/silyn-storage/tests/storage.rs::duplicate_ids_are_rejected"
+required = true
+
+[[gate]]
+id = "storage.transaction_rollback"
+test = "crates/silyn-storage/tests/storage.rs::transaction_rollback_leaves_no_rows"
+required = true
+
 # Contract tests stay ignored until their subsystem lands. They are tracked from
 # W0 so the registry cannot silently lose them.
 [[gate]]
