@@ -82,7 +82,16 @@ async fn migrations_apply_once() {
         .fetch_one(storage.pool())
         .await
         .expect("count migrations");
-    assert_eq!(count, 2, "both W0 migrations must be applied");
+    let migration_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+    let expected = std::fs::read_dir(migration_dir)
+        .expect("read migrations directory")
+        .filter_map(Result::ok)
+        .filter(|entry| entry.path().extension().and_then(|ext| ext.to_str()) == Some("sql"))
+        .count() as i64;
+    assert_eq!(
+        count, expected,
+        "every migration file must be applied exactly once"
+    );
 
     storage.migrate().await.expect("migrate is idempotent");
     let count_after: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM _sqlx_migrations")
