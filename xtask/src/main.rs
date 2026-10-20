@@ -548,7 +548,10 @@ fn verify_arch() -> Result<()> {
                 "silyn-storage",
             ][..],
         ),
-        ("silyn-cli", &["silyn-app", "silyn-core", "silyn-llm"][..]),
+        (
+            "silyn-cli",
+            &["silyn-api", "silyn-app", "silyn-core", "silyn-llm"][..],
+        ),
         ("silyn-eval", &["silyn-core", "silyn-llm"][..]),
         ("silyn-api", &["silyn-app", "silyn-core"][..]),
     ]);
