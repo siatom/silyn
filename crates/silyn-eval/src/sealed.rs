@@ -1,13 +1,18 @@
 //! Sealed test set.
 //!
 //! The test split is generated on demand inside this module and stored in a
-//! private field. The public surface is deliberately limited to length, digest
-//! and [`SealedTestSet::evaluate`]: there is no accessor that hands out test
-//! tasks, inputs or oracles. A [`Solver`] only ever receives [`TaskInput`].
+//! private field. The public surface is deliberately limited to length, digest,
+//! [`SealedTestSet::evaluate`] and [`SealedTestSet::load_for_manifest`]: there is
+//! no accessor that hands out test tasks, inputs or oracles. A [`Solver`] only
+//! ever receives [`TaskInput`], and the crate-private
+//! [`SealedTestSet::tasks`] is reachable only from the arm runner.
 
-use crate::evaluator::{ArmOutcome, Solver, run_tasks};
+use silyn_core::SilynError;
+
+use crate::evaluator::{ArmOutcome, Solver};
 use crate::generator;
-use crate::task::Task;
+use crate::manifest::SuiteManifest;
+use crate::task::{Split, Task};
 
 /// Sealed holder of the `csv-stats-v1` test split.
 pub struct SealedTestSet {
@@ -35,6 +40,31 @@ impl SealedTestSet {
         Self { tasks, digest }
     }
 
+    /// Loads the test split for an operator-approved sealed run.
+    ///
+    /// Fails unless the manifest declares `sealed = true` and the recorded test
+    /// digest matches the generated split, so editing the suite without a new
+    /// version cannot produce a report.
+    pub fn load_for_manifest(manifest: &SuiteManifest) -> Result<Self, SilynError> {
+        if !manifest.sealed {
+            return Err(SilynError::PolicyDenied(
+                "the suite is not sealed (`sealed = false`); run train or dev, or create a new \
+                 sealed suite version"
+                    .to_owned(),
+            ));
+        }
+        let set = Self::load_default();
+        let expected = &manifest.split_entry(Split::Test).sha256;
+        if &set.digest != expected {
+            return Err(SilynError::Schema(format!(
+                "sealed test split digest {} does not match suite.toml ({}); regenerate the \
+                 manifest for a new suite version",
+                set.digest, expected
+            )));
+        }
+        Ok(set)
+    }
+
     #[must_use]
     pub fn len(&self) -> usize {
         self.tasks.len()
@@ -52,10 +82,19 @@ impl SealedTestSet {
         &self.digest
     }
 
-    /// Scores a solver against the sealed tasks. `repeats` is clamped to 1..=5.
-    #[must_use]
+    /// Crate-private task access for the arm runner. Never public: a candidate
+    /// path must not be able to name test tasks or oracles.
+    pub(crate) fn tasks(&self) -> &[Task] {
+        &self.tasks
+    }
+
+    /// Scores a solver against the sealed tasks, in-process.
     pub fn evaluate(&self, solver: &dyn Solver, repeats: u32) -> ArmOutcome {
-        run_tasks(&self.tasks, solver, repeats)
+        let repeats = repeats.clamp(1, crate::evaluator::MAX_REPEATS);
+        let evaluator =
+            crate::evaluator::Evaluator::with_seed(repeats, crate::evaluator::DEFAULT_RUN_SEED)
+                .expect("repeats is clamped to the protocol range");
+        evaluator.evaluate_sealed(solver, self)
     }
 }
 
@@ -68,7 +107,6 @@ impl Default for SealedTestSet {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::task::Split;
 
     #[test]
     fn digest_matches_generator_and_manifest() {

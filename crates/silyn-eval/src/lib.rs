@@ -1,29 +1,45 @@
 //! Silyn evaluation harness.
 //!
 //! This crate owns the synthetic `csv-stats-v1` task family, the oracle-based
-//! scoring of a solver, the sealed test set and the evaluation report contract
-//! (see `docs/architecture/adr/0004-evaluation-protocol.md`).
+//! scoring of a solver, the sealed test set, isolated per-task workers, paired
+//! bootstrap statistics and the evaluation report contract (see
+//! `docs/architecture/adr/0004-evaluation-protocol.md`).
 //!
 //! Boundaries:
 //! - a [`Solver`] only ever receives [`TaskInput`] (objective + CSV text);
 //! - oracles live in metadata that is computed by the generator before the CSV is
 //!   rendered and is never parsed back out of the CSV;
 //! - the `test` split is only reachable through [`SealedTestSet`], which exposes
-//!   evaluation but no task or oracle accessor;
-//! - arms B and C reuse arm A in W2 because memory and evolution do not exist yet.
+//!   evaluation but no public task or oracle accessor;
+//! - the CLI runs every attempt in a child process with a scrubbed environment,
+//!   a fresh working directory and a wall-clock timeout;
+//! - arms A, B and C share solver, model, budget and price; only the recorded
+//!   capability flags differ.
 
+pub mod arm;
+pub mod backend;
 pub mod baseline;
 pub mod evaluator;
 pub mod generator;
 pub mod integrity;
+pub mod isolation;
 pub mod manifest;
 pub mod report;
 pub mod sealed;
+pub mod statistics;
 pub mod task;
 
+mod rng;
+
+pub use arm::{ArmConfig, ArmId, Arms, ArmsConfig};
+pub use backend::{InProcessBackend, RunnerBackend, TaskAttempt, TaskBudget, TaskFailureKind};
 pub use baseline::BaselineSolver;
-pub use evaluator::{ArmOutcome, Arms, Evaluator, Solver, TaskResult};
+pub use evaluator::{ArmOutcome, Evaluator, FailureRecord, Solver, TaskResult};
+pub use isolation::{SubprocessBackend, WorkerFault};
 pub use manifest::SuiteManifest;
-pub use report::{EvaluationReport, Verdict};
+pub use report::{EvaluationReport, render_markdown};
 pub use sealed::SealedTestSet;
+pub use statistics::{
+    ArmStatistics, Bootstrap, Decision, EvaluationStatistics, PairedGain, Verdict, VerdictDetail,
+};
 pub use task::{Oracle, Split, Submission, Task, TaskInput, TaskMetadata, TrapFlags, Unit};

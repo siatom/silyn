@@ -1,0 +1,75 @@
+# W5-01 evaluation lab gates.
+#
+# One gate per test in the task package. `cargo run -p xtask -- verify-acceptance`
+# resolves every entry against the real test source; removing or renaming a test
+# requires an integrator commit.
+
+[[gate]]
+id = "eval.sealed_split_not_exposed"
+test = "crates/silyn-eval/tests/runner.rs::sealed_split_is_the_only_test_path"
+required = true
+
+[[gate]]
+id = "eval.byte_identical_split"
+test = "crates/silyn-eval/tests/generator.rs::same_seed_produces_byte_identical_split"
+required = true
+
+[[gate]]
+id = "eval.tampered_artifact_rejected"
+test = "crates/silyn-eval/tests/integrity.rs::changed_artifact_fails_integrity_check"
+required = true
+
+[[gate]]
+id = "eval.suite_hashes_match_manifest"
+test = "crates/silyn-eval/tests/integrity.rs::hashes_match_manifest_digests"
+required = true
+
+[[gate]]
+id = "eval.three_arms_same_budget"
+test = "crates/silyn-eval/tests/runner.rs::three_arms_share_the_same_tasks_and_budget"
+required = true
+
+[[gate]]
+id = "eval.report_schema_complete"
+test = "crates/silyn-eval/tests/report.rs::report_schema_is_complete_and_typed"
+required = true
+
+[[gate]]
+id = "eval.bootstrap_ci_deterministic"
+test = "crates/silyn-eval/tests/statistics.rs::bootstrap_ci_is_deterministic_and_handles_degenerate_samples"
+required = true
+
+[[gate]]
+id = "eval.verdict_follows_thresholds"
+test = "crates/silyn-eval/tests/statistics.rs::verdict_follows_preregistered_thresholds"
+required = true
+
+[[gate]]
+id = "eval.worker_isolation"
+test = "crates/silyn-eval/tests/runner.rs::worker_scrubs_environment_and_sets_fresh_cwd"
+required = true
+
+[[gate]]
+id = "eval.worker_timeout_is_a_task_failure"
+test = "crates/silyn-eval/tests/runner.rs::timeout_is_a_task_failure_not_a_crash"
+required = true
+
+[[gate]]
+id = "eval.worker_invalid_output_is_a_task_failure"
+test = "crates/silyn-eval/tests/runner.rs::invalid_stdout_is_a_task_failure"
+required = true
+
+[[gate]]
+id = "eval.worker_panic_does_not_abort_run"
+test = "crates/silyn-eval/tests/runner.rs::panicking_worker_does_not_abort_the_run"
+required = true
+
+[[gate]]
+id = "eval.sealed_run_requires_operator_flag"
+test = "crates/silyn-eval/tests/runner.rs::sealed_run_requires_the_operator_flag"
+required = true
+
+[[gate]]
+id = "eval.markdown_matches_json"
+test = "crates/silyn-eval/tests/report.rs::markdown_introduces_no_numbers_absent_from_json"
+required = true

@@ -3,11 +3,17 @@
 //! A [`Solver`] is the only surface a candidate implements. The runner owns the
 //! oracle, so a solver cannot see ground truth and cannot fake a success: its
 //! JSON submission is compared field by field against generator metadata.
+//!
+//! Attempts go through a [`RunnerBackend`](crate::backend::RunnerBackend). The
+//! CLI always uses subprocess isolation; the in-process backend exists for unit
+//! tests and still turns solver errors and panics into task failures.
 
 use std::time::Instant;
 
 use silyn_core::SilynError;
 
+use crate::arm::{ArmConfig, ArmId, Arms};
+use crate::backend::{InProcessBackend, RunnerBackend, TaskFailure, TaskFailureKind};
 use crate::generator::generate_split;
 use crate::sealed::SealedTestSet;
 use crate::task::{Split, Submission, Task, TaskInput};
@@ -23,12 +29,32 @@ pub trait Solver: Send + Sync {
     }
 }
 
-/// Per-task scoring, kept for diagnostics and W5 analysis (not in the report).
+/// Per-task scoring, kept for diagnostics and paired statistics.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TaskResult {
     pub task_id: String,
     pub successes: u32,
     pub attempts: u32,
+}
+
+impl TaskResult {
+    /// Success rate of this task in percentage points.
+    #[must_use]
+    pub fn success_rate_pp(&self) -> f64 {
+        if self.attempts == 0 {
+            0.0
+        } else {
+            f64::from(self.successes) * 100.0 / f64::from(self.attempts)
+        }
+    }
+}
+
+/// One swallowed failure, retained so a report can explain a low score.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FailureRecord {
+    pub task_id: String,
+    pub kind: TaskFailureKind,
+    pub detail: String,
 }
 
 /// Outcome of running one arm over one split.
@@ -37,10 +63,13 @@ pub struct ArmOutcome {
     successes: u32,
     total: u32,
     cost_usd: f64,
+    duration_ms: f64,
     latency_p50_ms: f64,
     latency_p95_ms: f64,
     tool_errors: u32,
+    unauthorized_actions: u32,
     task_results: Vec<TaskResult>,
+    failures: Vec<FailureRecord>,
 }
 
 impl ArmOutcome {
@@ -60,6 +89,12 @@ impl ArmOutcome {
         self.cost_usd
     }
 
+    /// Wall-clock duration of every attempt in this arm.
+    #[must_use]
+    pub fn duration_ms(&self) -> f64 {
+        self.duration_ms
+    }
+
     #[must_use]
     pub fn latency_p50_ms(&self) -> f64 {
         self.latency_p50_ms
@@ -75,10 +110,22 @@ impl ArmOutcome {
         self.tool_errors
     }
 
+    /// Actions the policy gate refused. Expected to stay zero.
+    #[must_use]
+    pub fn unauthorized_actions(&self) -> u32 {
+        self.unauthorized_actions
+    }
+
     /// Per-task success/failure detail, in split order.
     #[must_use]
     pub fn task_results(&self) -> &[TaskResult] {
         &self.task_results
+    }
+
+    /// Failures in attempt order, for diagnostics.
+    #[must_use]
+    pub fn failures(&self) -> &[FailureRecord] {
+        &self.failures
     }
 
     /// Success rate in percentage points.
@@ -92,30 +139,39 @@ impl ArmOutcome {
     }
 }
 
-/// Arms A, B and C. In W2 all three run the same solver because memory (B) and
-/// the promoted policy (C) do not exist yet; the report records this honestly.
-#[derive(Debug, Clone, PartialEq)]
-pub struct Arms {
-    pub a: ArmOutcome,
-    pub b: ArmOutcome,
-    pub c: ArmOutcome,
-}
+/// Default seed recorded when the operator does not pass one.
+///
+/// The task stream itself is deterministic (the generator is seeded per split and
+/// index), so the run seed is provenance: it is written to the statistics
+/// document and, for a stochastic solver or provider, it is the value that would
+/// seed the draw. The bootstrap seed is independent and fixed, so the interval of
+/// a given outcome set cannot be re-rolled.
+pub const DEFAULT_RUN_SEED: u64 = 0x5eed_0000_0000_2026;
 
-/// Single-arm runner for the W2 skeleton.
+/// Upper bound for `--repeats` (ADR 0004 and the suite manifest schema).
+pub const MAX_REPEATS: u32 = 5;
+
+/// Arm runner bound to a repeat count and a recorded seed.
 #[derive(Debug, Clone, Copy)]
 pub struct Evaluator {
     repeats: u32,
+    seed: u64,
 }
 
 impl Evaluator {
     /// `repeats` must stay within the protocol range 1..=5.
     pub fn new(repeats: u32) -> Result<Self, SilynError> {
-        if !(1..=5).contains(&repeats) {
+        Self::with_seed(repeats, DEFAULT_RUN_SEED)
+    }
+
+    /// Builds a runner with an explicit, recorded seed.
+    pub fn with_seed(repeats: u32, seed: u64) -> Result<Self, SilynError> {
+        if !(1..=MAX_REPEATS).contains(&repeats) {
             return Err(SilynError::Permanent(format!(
-                "repeats must be 1..=5, got {repeats}"
+                "repeats must be 1..={MAX_REPEATS}, got {repeats}"
             )));
         }
-        Ok(Self { repeats })
+        Ok(Self { repeats, seed })
     }
 
     #[must_use]
@@ -123,78 +179,163 @@ impl Evaluator {
         self.repeats
     }
 
-    /// Runs train or dev. The test split is denied here by design.
-    pub fn run_arm(&self, solver: &dyn Solver, split: Split) -> Result<ArmOutcome, SilynError> {
-        if split.is_sealed() {
-            return Err(SilynError::PolicyDenied(
-                "the test split is sealed; evaluate it through SealedTestSet".to_owned(),
-            ));
-        }
-        let tasks = generate_split(split)?;
-        Ok(run_tasks(&tasks, solver, self.repeats))
+    #[must_use]
+    pub fn seed(&self) -> u64 {
+        self.seed
     }
 
-    /// Runs A, B and C with the same solver. W2 has no memory or evolution, so
-    /// any difference between the arms would be noise; the verdict must not
-    /// claim a gain. This is replaced by real arms in W5.
+    /// Runs train or dev in-process. The test split is denied here by design;
+    /// it is only reachable through [`SealedTestSet`].
+    pub fn run_arm(&self, solver: &dyn Solver, split: Split) -> Result<ArmOutcome, SilynError> {
+        let config = ArmConfig::baseline(ArmId::A, "mock", Default::default());
+        let backend = InProcessBackend::new(solver);
+        self.run_split(&backend, &config, split)
+    }
+
+    /// Runs A, B and C in-process with the same solver and budget. Useful for
+    /// offline smoke checks; the verdict still follows the paired statistics.
     pub fn run_matrix(&self, solver: &dyn Solver, split: Split) -> Result<Arms, SilynError> {
+        let backend = InProcessBackend::new(solver);
+        let budget = Default::default();
         Ok(Arms {
-            a: self.run_arm(solver, split)?,
-            b: self.run_arm(solver, split)?,
-            c: self.run_arm(solver, split)?,
+            a: self.run_split(
+                &backend,
+                &ArmConfig::baseline(ArmId::A, "mock", budget),
+                split,
+            )?,
+            b: self.run_split(
+                &backend,
+                &ArmConfig::baseline(ArmId::B, "mock", budget),
+                split,
+            )?,
+            c: self.run_split(
+                &backend,
+                &ArmConfig::baseline(ArmId::C, "mock", budget),
+                split,
+            )?,
         })
     }
 
-    /// Evaluates the sealed test set. Only this method path can touch test tasks.
+    /// Evaluates one arm over a train or dev split through a backend.
+    ///
+    /// A sealed split is refused before any task is generated, so a candidate
+    /// path can never hold test tasks or oracles.
+    pub fn run_split(
+        &self,
+        backend: &dyn RunnerBackend,
+        config: &ArmConfig,
+        split: Split,
+    ) -> Result<ArmOutcome, SilynError> {
+        if split.is_sealed() {
+            return Err(SilynError::PolicyDenied(
+                "the test split is sealed; use SealedTestSet::load_for_manifest".to_owned(),
+            ));
+        }
+        config.validate()?;
+        let tasks = generate_split(split)?;
+        Ok(self.run_tasks(&tasks, backend, config))
+    }
+
+    /// Evaluates one arm over the sealed test set. This is the only test-split
+    /// path in the crate and it never returns tasks or oracles to the caller.
+    #[must_use]
+    pub fn run_sealed(
+        &self,
+        backend: &dyn RunnerBackend,
+        config: &ArmConfig,
+        set: &SealedTestSet,
+    ) -> ArmOutcome {
+        self.run_tasks(set.tasks(), backend, config)
+    }
+
+    /// Evaluates the sealed test set in-process through a solver.
     #[must_use]
     pub fn evaluate_sealed(&self, solver: &dyn Solver, set: &SealedTestSet) -> ArmOutcome {
-        set.evaluate(solver, self.repeats)
+        let config = ArmConfig::baseline(ArmId::A, "mock", Default::default());
+        self.run_sealed(&InProcessBackend::new(solver), &config, set)
     }
-}
 
-/// Executes `tasks * repeats` attempts and scores each submission exactly.
-pub(crate) fn run_tasks(tasks: &[Task], solver: &dyn Solver, repeats: u32) -> ArmOutcome {
-    let repeats = repeats.clamp(1, 5);
-    let mut successes = 0_u32;
-    let mut total = 0_u32;
-    let mut tool_errors = 0_u32;
-    let mut latencies: Vec<f64> = Vec::new();
-    let mut task_results: Vec<TaskResult> = Vec::with_capacity(tasks.len());
+    /// Executes `tasks * repeats` attempts for one arm and scores each
+    /// submission against the task oracle. Public so tests can drive a
+    /// hand-built task list through a [`RunnerBackend`].
+    #[must_use]
+    pub fn run_tasks(
+        &self,
+        tasks: &[Task],
+        backend: &dyn RunnerBackend,
+        config: &ArmConfig,
+    ) -> ArmOutcome {
+        let repeats = self.repeats.clamp(1, MAX_REPEATS);
+        let mut successes = 0_u32;
+        let mut total = 0_u32;
+        let mut tool_errors = 0_u32;
+        let mut unauthorized_actions = 0_u32;
+        let mut duration_ms = 0.0_f64;
+        let mut latencies: Vec<f64> = Vec::new();
+        let mut task_results: Vec<TaskResult> = Vec::with_capacity(tasks.len());
+        let mut failures: Vec<FailureRecord> = Vec::new();
 
-    for task in tasks {
-        let mut task_successes = 0_u32;
-        for _ in 0..repeats {
-            total += 1;
-            let started = Instant::now();
-            let result = solver.solve(&task.input);
-            latencies.push(started.elapsed().as_secs_f64() * 1000.0);
-            match result {
-                Ok(submission) => {
-                    if task.metadata.oracle.matches(&submission) {
+        for task in tasks {
+            let mut task_successes = 0_u32;
+            for _ in 0..repeats {
+                total += 1;
+                let started = Instant::now();
+                let attempt = backend.run(&task.input, &config.budget);
+                let elapsed = started.elapsed().as_secs_f64() * 1000.0;
+                // Prefer the backend's own measurement; process spawn overhead
+                // is included by the wall clock either way.
+                let attempt_ms = if attempt.duration_ms() > 0.0 {
+                    attempt.duration_ms()
+                } else {
+                    elapsed
+                };
+                duration_ms += attempt_ms;
+                latencies.push(attempt_ms);
+                tool_errors += attempt.tool_errors();
+                unauthorized_actions += attempt.unauthorized_actions();
+
+                match attempt.submission() {
+                    Some(submission) if task.metadata.oracle.matches(submission) => {
                         successes += 1;
                         task_successes += 1;
                     }
+                    Some(_) => {}
+                    None => {
+                        let failure = attempt.failure().cloned().unwrap_or_else(|| {
+                            TaskFailure::new(
+                                TaskFailureKind::SolverError,
+                                "backend returned no submission and no failure",
+                            )
+                        });
+                        failures.push(FailureRecord {
+                            task_id: task.metadata.task_id.clone(),
+                            kind: failure.kind(),
+                            detail: failure.detail().to_owned(),
+                        });
+                    }
                 }
-                Err(_) => tool_errors += 1,
             }
+            task_results.push(TaskResult {
+                task_id: task.metadata.task_id.clone(),
+                successes: task_successes,
+                attempts: repeats,
+            });
         }
-        task_results.push(TaskResult {
-            task_id: task.metadata.task_id.clone(),
-            successes: task_successes,
-            attempts: repeats,
-        });
-    }
 
-    latencies.sort_by(f64::total_cmp);
+        latencies.sort_by(f64::total_cmp);
 
-    ArmOutcome {
-        successes,
-        total,
-        cost_usd: solver.cost_usd_per_call() * f64::from(total),
-        latency_p50_ms: percentile(&latencies, 0.50),
-        latency_p95_ms: percentile(&latencies, 0.95),
-        tool_errors,
-        task_results,
+        ArmOutcome {
+            successes,
+            total,
+            cost_usd: config.cost_usd_per_call * f64::from(total),
+            duration_ms,
+            latency_p50_ms: percentile(&latencies, 0.50),
+            latency_p95_ms: percentile(&latencies, 0.95),
+            tool_errors,
+            unauthorized_actions,
+            task_results,
+            failures,
+        }
     }
 }
 
