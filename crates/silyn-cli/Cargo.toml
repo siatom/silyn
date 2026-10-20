@@ -22,4 +22,5 @@ serde_json.workspace = true
 tokio.workspace = true
 
 [dev-dependencies]
+silyn-storage = { path = "../silyn-storage" }
 tempfile.workspace = true

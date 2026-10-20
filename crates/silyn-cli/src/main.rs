@@ -18,9 +18,12 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use clap::{CommandFactory, Parser, Subcommand};
-use silyn_app::{AgentRecord, App, RunRecord, SessionRecord, TaskRecord};
+use silyn_app::{
+    AgentRecord, App, RunRecord, SessionRecord, TaskRecord, ToolCallRecord, ToolCallState,
+};
 use silyn_core::SilynError;
 use silyn_core::error::ErrorClass;
+use silyn_core::event::RunEvent;
 use silyn_core::ids::{AgentId, RunId, SessionId};
 use silyn_core::state::RunStatus;
 
@@ -125,6 +128,24 @@ enum RunsCommand {
         #[arg(value_parser = parse_run_id)]
         id: RunId,
     },
+    /// List the journal events of one run in sequence order.
+    Events {
+        /// Run id (UUID).
+        #[arg(value_parser = parse_run_id)]
+        id: RunId,
+    },
+    /// List the tool-call ledger of one run, oldest first.
+    Tools {
+        /// Run id (UUID).
+        #[arg(value_parser = parse_run_id)]
+        id: RunId,
+    },
+    /// Request cancellation of a run. The runtime performs the transition.
+    Cancel {
+        /// Run id (UUID).
+        #[arg(value_parser = parse_run_id)]
+        id: RunId,
+    },
 }
 
 #[tokio::main]
@@ -160,6 +181,9 @@ async fn dispatch(command: Command, json: bool) -> Result<(), SilynError> {
         Command::Runs { command } => match command {
             RunsCommand::List => runs_list(json).await,
             RunsCommand::Show { id } => runs_show(id, json).await,
+            RunsCommand::Events { id } => runs_events(id, json).await,
+            RunsCommand::Tools { id } => runs_tools(id, json).await,
+            RunsCommand::Cancel { id } => runs_cancel(id, json).await,
         },
         // The runtime loop is W3. Returning a permanent error keeps `run`
         // scriptable without inventing a run record that never executed.
@@ -424,6 +448,55 @@ async fn runs_show(id: RunId, json: bool) -> Result<(), SilynError> {
     Ok(())
 }
 
+async fn runs_events(id: RunId, json: bool) -> Result<(), SilynError> {
+    let app = App::open(home_dir()).await?;
+    let events = app.list_run_events(id).await?;
+
+    if json {
+        return print_json(&serde_json::to_value(&events)?);
+    }
+
+    let rows: Vec<Vec<String>> = events
+        .iter()
+        .map(|envelope| {
+            vec![
+                envelope.seq.to_string(),
+                event_name(&envelope.event),
+                envelope.occurred_at.to_rfc3339(),
+                envelope.event_id.to_string(),
+            ]
+        })
+        .collect();
+    print_tsv(&rows);
+    Ok(())
+}
+
+async fn runs_tools(id: RunId, json: bool) -> Result<(), SilynError> {
+    let app = App::open(home_dir()).await?;
+    let calls = app.list_tool_calls(id).await?;
+
+    if json {
+        return print_json(&serde_json::to_value(&calls)?);
+    }
+
+    let rows: Vec<Vec<String>> = calls.iter().map(tool_row).collect();
+    print_tsv(&rows);
+    Ok(())
+}
+
+async fn runs_cancel(id: RunId, json: bool) -> Result<(), SilynError> {
+    let app = App::open(home_dir()).await?;
+    let request = app.request_cancel(id).await?;
+
+    if json {
+        return print_json(&serde_json::to_value(&request)?);
+    }
+
+    println!("path: {}", request.path.display());
+    println!("already_requested: {}", request.already_requested);
+    Ok(())
+}
+
 fn print_agent(record: &AgentRecord, json: bool) -> Result<(), SilynError> {
     if json {
         return print_json(&serde_json::to_value(record)?);
@@ -478,10 +551,49 @@ fn status_name(status: RunStatus) -> String {
     }
 }
 
+/// Event names match the JSON wire format (snake_case `type` tag).
+fn event_name(event: &RunEvent) -> String {
+    match serde_json::to_value(event) {
+        Ok(serde_json::Value::Object(fields)) => fields
+            .get("type")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("unknown")
+            .to_owned(),
+        _ => "unknown".to_owned(),
+    }
+}
+
+/// Ledger state names match the JSON wire format (snake_case).
+fn tool_state_name(state: ToolCallState) -> String {
+    match serde_json::to_value(state) {
+        Ok(serde_json::Value::String(name)) => name,
+        _ => "unknown".to_owned(),
+    }
+}
+
+/// One human-readable ledger row: step, tool, state, call id, result reference.
+fn tool_row(call: &ToolCallRecord) -> Vec<String> {
+    vec![
+        call.step_id.to_string(),
+        call.tool_name.clone(),
+        tool_state_name(call.state),
+        call.tool_call_id.clone(),
+        call.result_ref.clone().unwrap_or_else(|| "-".to_owned()),
+    ]
+}
+
 fn print_json(value: &serde_json::Value) -> Result<(), SilynError> {
     let text = serde_json::to_string_pretty(value)?;
     println!("{text}");
     Ok(())
+}
+
+/// Prints tab-separated rows without padding, so the output can be piped
+/// through `cut`/`awk`. An empty slice prints nothing.
+fn print_tsv(rows: &[Vec<String>]) {
+    for row in rows {
+        println!("{}", row.join("\t"));
+    }
 }
 
 fn print_table(headers: &[&str], rows: &[Vec<String>]) {
