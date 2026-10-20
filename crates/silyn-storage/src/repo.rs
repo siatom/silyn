@@ -247,6 +247,32 @@ impl<'a> RunRepository<'a> {
         Ok(())
     }
 
+    /// Replaces the run's usage totals. The runtime calls this after every model
+    /// response so the row matches the checkpointed counters.
+    pub async fn update_usage(
+        &self,
+        id: RunId,
+        input_tokens: i64,
+        output_tokens: i64,
+        cost_usd: f64,
+    ) -> Result<(), SilynError> {
+        let result = sqlx::query(
+            "UPDATE runs SET input_tokens = ?2, output_tokens = ?3, cost_usd = ?4 WHERE id = ?1",
+        )
+        .bind(id.to_string())
+        .bind(input_tokens)
+        .bind(output_tokens)
+        .bind(cost_usd)
+        .execute(self.pool)
+        .await
+        .map_err(db_error)?;
+
+        if result.rows_affected() == 0 {
+            return Err(SilynError::Permanent(format!("run {id} not found")));
+        }
+        Ok(())
+    }
+
     pub async fn get(&self, id: RunId) -> Result<Option<RunRecord>, SilynError> {
         let row = sqlx::query(
             "SELECT id, task_id, policy_version, memory_snapshot_version, model_id, status,
