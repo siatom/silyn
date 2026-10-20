@@ -1658,13 +1658,16 @@ name = "silyn-runtime"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "chrono",
  "csv",
  "dunce",
  "serde",
  "serde_json",
+ "sha2",
  "silyn-core",
  "silyn-llm",
  "silyn-storage",
+ "sqlx",
  "tempfile",
  "tokio",
 ]

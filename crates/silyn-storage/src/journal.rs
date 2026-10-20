@@ -7,7 +7,7 @@ use chrono::{DateTime, Utc};
 use silyn_core::SilynError;
 use silyn_core::event::{EventEnvelope, RunEvent};
 use silyn_core::ids::{RunId, TaskId};
-use silyn_core::state::TaskStatus;
+use silyn_core::state::{RunStatus, TaskStatus};
 use sqlx::{Row, Sqlite, SqlitePool};
 
 use crate::codec::encode_enum;
@@ -52,6 +52,64 @@ impl<'a> Journal<'a> {
 
         if updated.rows_affected() == 0 {
             return Err(SilynError::Permanent(format!("task {task_id} not found")));
+        }
+
+        insert_event(&mut *transaction, envelope).await?;
+        transaction.commit().await.map_err(db_error)?;
+        Ok(())
+    }
+
+    /// Updates a run, optionally the owning task, and appends the event in one
+    /// transaction.
+    ///
+    /// `started_at` is only written when the run does not have one yet, and
+    /// `finished_at` is only written when supplied. The runtime uses this for
+    /// every run business transition so a failed append cannot leave the row
+    /// ahead of the journal.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn append_run_transition(
+        &self,
+        run_id: RunId,
+        run_status: RunStatus,
+        started_at: Option<DateTime<Utc>>,
+        finished_at: Option<DateTime<Utc>>,
+        task: Option<(TaskId, TaskStatus)>,
+        updated_at: DateTime<Utc>,
+        envelope: &EventEnvelope,
+    ) -> Result<(), SilynError> {
+        let mut transaction = self.pool.begin().await.map_err(db_error)?;
+
+        let updated = sqlx::query(
+            "UPDATE runs SET status = ?2,
+                 started_at = COALESCE(started_at, ?3),
+                 finished_at = COALESCE(?4, finished_at)
+             WHERE id = ?1",
+        )
+        .bind(run_id.to_string())
+        .bind(encode_enum(&run_status)?)
+        .bind(started_at)
+        .bind(finished_at)
+        .execute(&mut *transaction)
+        .await
+        .map_err(db_error)?;
+
+        if updated.rows_affected() == 0 {
+            return Err(SilynError::Permanent(format!("run {run_id} not found")));
+        }
+
+        if let Some((task_id, task_status)) = task {
+            let updated =
+                sqlx::query("UPDATE tasks SET status = ?2, updated_at = ?3 WHERE id = ?1")
+                    .bind(task_id.to_string())
+                    .bind(encode_enum(&task_status)?)
+                    .bind(updated_at)
+                    .execute(&mut *transaction)
+                    .await
+                    .map_err(db_error)?;
+
+            if updated.rows_affected() == 0 {
+                return Err(SilynError::Permanent(format!("task {task_id} not found")));
+            }
         }
 
         insert_event(&mut *transaction, envelope).await?;

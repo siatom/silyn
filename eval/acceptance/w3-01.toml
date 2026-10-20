@@ -1,0 +1,51 @@
+# W3-01 acceptance gates: bounded resumable runtime loop.
+
+[[gate]]
+id = "runtime.budget_exhausted"
+test = "crates/silyn-runtime/tests/run.rs::budget_exhaustion_fails_run"
+required = true
+
+[[gate]]
+id = "runtime.cancel_propagates"
+test = "crates/silyn-runtime/tests/run.rs::cancellation_before_first_step_stops_run"
+required = true
+
+[[gate]]
+id = "runtime.cancel_file_propagates"
+test = "crates/silyn-runtime/tests/run.rs::cancel_file_interrupts_in_flight_model_call"
+required = true
+
+[[gate]]
+id = "runtime.resume_no_duplicate_side_effect"
+test = "crates/silyn-runtime/tests/run.rs::resume_after_crash_does_not_repeat_side_effect"
+required = true
+
+[[gate]]
+id = "runtime.indeterminate_blocks_replay"
+test = "crates/silyn-runtime/tests/run.rs::seeded_started_ledger_blocks_replay"
+required = true
+
+[[gate]]
+id = "runtime.loop_detected"
+test = "crates/silyn-runtime/tests/run.rs::repeated_tool_call_fails_run"
+required = true
+
+[[gate]]
+id = "runtime.transient_retry_classified"
+test = "crates/silyn-runtime/src/retry.rs::transient_is_retried_and_permanent_is_not"
+required = true
+
+[[gate]]
+id = "runtime.malformed_action_repaired"
+test = "crates/silyn-runtime/tests/run.rs::malformed_action_is_repaired_once"
+required = true
+
+[[gate]]
+id = "runtime.checkpoint_rejects_corruption"
+test = "crates/silyn-runtime/tests/run.rs::checkpoint_corruption_and_schema_mismatch_fail_loudly"
+required = true
+
+[[gate]]
+id = "runtime.terminal_event_written"
+test = "crates/silyn-runtime/tests/run.rs::terminal_events_and_rows_are_consistent"
+required = true

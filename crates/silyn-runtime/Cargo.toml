@@ -12,11 +12,15 @@ silyn-core = { path = "../silyn-core" }
 silyn-llm = { path = "../silyn-llm" }
 silyn-storage = { path = "../silyn-storage" }
 async-trait = { workspace = true }
+chrono = { workspace = true }
 csv = "1"
 dunce = "1"
 serde = { workspace = true }
 serde_json = { workspace = true }
+sha2 = { workspace = true }
+tokio = { workspace = true, features = ["rt", "time", "sync"] }
 
 [dev-dependencies]
+sqlx = { workspace = true }
 tempfile = { workspace = true }
 tokio = { workspace = true }
