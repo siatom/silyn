@@ -10,6 +10,7 @@ repository.workspace = true
 [dependencies]
 silyn-core = { path = "../silyn-core" }
 silyn-storage = { path = "../silyn-storage" }
+async-trait.workspace = true
 chrono.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -17,4 +18,5 @@ sha2.workspace = true
 sqlx.workspace = true
 
 [dev-dependencies]
+tempfile.workspace = true
 tokio.workspace = true
