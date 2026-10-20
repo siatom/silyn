@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 use silyn_core::SilynError;
 
 use crate::backend::TaskBudget;
+use crate::context::ArmContextRecord;
 
 /// Arm identifier. The report keys are exactly `A`, `B` and `C`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -50,6 +51,16 @@ impl ArmId {
             Self::C => "memory-and-promoted-policy",
         }
     }
+
+    /// Position in [`ArmId::ALL`]; useful for parallel per-arm vectors.
+    #[must_use]
+    pub const fn index(self) -> usize {
+        match self {
+            Self::A => 0,
+            Self::B => 1,
+            Self::C => 2,
+        }
+    }
 }
 
 impl std::fmt::Display for ArmId {
@@ -86,6 +97,13 @@ pub struct ArmConfig {
     pub evolution: bool,
     pub budget: TaskBudget,
     pub cost_usd_per_call: f64,
+    /// Declared context of this arm, when the solver reads one (W6 B and C).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context: Option<ArmContextRecord>,
+    /// True when the provider has a price table, so `cost_usd` is metered. False
+    /// records that the provider is unpriced and every arm spends 0.0.
+    #[serde(default)]
+    pub price_configured: bool,
 }
 
 impl ArmConfig {
@@ -103,7 +121,43 @@ impl ArmConfig {
             evolution: id.uses_evolution(),
             budget,
             cost_usd_per_call: 0.0,
+            context: None,
+            price_configured: false,
         }
+    }
+
+    /// An arm backed by a declared solver id and model (the W6 model arms).
+    ///
+    /// `cost_usd_per_call` stays 0.0 because a metered provider has no fixed
+    /// per-call price; the measured spend is recorded on the outcome.
+    #[must_use]
+    pub fn for_solver(id: ArmId, solver_id: &str, model_id: &str, budget: TaskBudget) -> Self {
+        Self {
+            id,
+            label: id.label().to_owned(),
+            solver: solver_id.to_owned(),
+            model_id: model_id.to_owned(),
+            memory: id.uses_memory(),
+            evolution: id.uses_evolution(),
+            budget,
+            cost_usd_per_call: 0.0,
+            context: None,
+            price_configured: false,
+        }
+    }
+
+    /// Records the effective context of this arm.
+    #[must_use]
+    pub fn with_context(mut self, context: Option<ArmContextRecord>) -> Self {
+        self.context = context;
+        self
+    }
+
+    /// Records whether the provider has a price table (metered spend or not).
+    #[must_use]
+    pub fn with_price_configured(mut self, price_configured: bool) -> Self {
+        self.price_configured = price_configured;
+        self
     }
 
     /// Rejects configurations that cannot be compared fairly.
@@ -154,6 +208,38 @@ impl ArmsConfig {
         }
     }
 
+    /// The three W6 arms of one declared solver and model. Only the capability
+    /// flags and the effective context differ; the budget, solver id, model and
+    /// price are identical, which [`ArmsConfig::validate_equal_budget`] proves.
+    #[must_use]
+    pub fn for_solver(solver_id: &str, model_id: &str, budget: TaskBudget) -> Self {
+        Self {
+            a: ArmConfig::for_solver(ArmId::A, solver_id, model_id, budget),
+            b: ArmConfig::for_solver(ArmId::B, solver_id, model_id, budget),
+            c: ArmConfig::for_solver(ArmId::C, solver_id, model_id, budget),
+        }
+    }
+
+    /// Attaches one arm's effective context.
+    #[must_use]
+    pub fn with_context(mut self, id: ArmId, context: Option<ArmContextRecord>) -> Self {
+        match id {
+            ArmId::A => self.a = self.a.with_context(context),
+            ArmId::B => self.b = self.b.with_context(context),
+            ArmId::C => self.c = self.c.with_context(context),
+        }
+        self
+    }
+
+    /// Records the provider price table on every arm (they must agree).
+    #[must_use]
+    pub fn with_price_configured(mut self, price_configured: bool) -> Self {
+        self.a = self.a.with_price_configured(price_configured);
+        self.b = self.b.with_price_configured(price_configured);
+        self.c = self.c.with_price_configured(price_configured);
+        self
+    }
+
     #[must_use]
     pub fn get(&self, id: ArmId) -> &ArmConfig {
         match id {
@@ -190,6 +276,7 @@ impl ArmsConfig {
                 || config.model_id != reference.model_id
                 || config.budget != reference.budget
                 || config.cost_usd_per_call != reference.cost_usd_per_call
+                || config.price_configured != reference.price_configured
             {
                 return Err(SilynError::PolicyDenied(format!(
                     "arm {id} does not share the solver, model, budget and price of arm A"

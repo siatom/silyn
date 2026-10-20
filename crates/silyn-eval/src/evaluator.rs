@@ -12,7 +12,7 @@ use std::time::Instant;
 
 use silyn_core::SilynError;
 
-use crate::arm::{ArmConfig, ArmId, Arms};
+use crate::arm::{ArmConfig, ArmId, Arms, ArmsConfig};
 use crate::backend::{InProcessBackend, RunnerBackend, TaskFailure, TaskFailureKind};
 use crate::generator::generate_split;
 use crate::sealed::SealedTestSet;
@@ -26,6 +26,26 @@ pub trait Solver: Send + Sync {
     /// Metered spend per attempt. The mock provider reports zero.
     fn cost_usd_per_call(&self) -> f64 {
         0.0
+    }
+}
+
+/// Per-arm solvers for a matrix run. Every field is a full [`Solver`]; they may
+/// share an implementation (baseline) or differ only by context (W6).
+#[derive(Clone, Copy)]
+pub struct ArmSolvers<'a> {
+    pub a: &'a dyn Solver,
+    pub b: &'a dyn Solver,
+    pub c: &'a dyn Solver,
+}
+
+impl<'a> ArmSolvers<'a> {
+    #[must_use]
+    pub fn get(&self, id: ArmId) -> &'a dyn Solver {
+        match id {
+            ArmId::A => self.a,
+            ArmId::B => self.b,
+            ArmId::C => self.c,
+        }
     }
 }
 
@@ -137,6 +157,19 @@ impl ArmOutcome {
             f64::from(self.successes) * 100.0 / f64::from(self.total)
         }
     }
+
+    /// Replaces the metered cost with the spend measured by the solver.
+    ///
+    /// The evaluator's own model is `cost_per_call * attempts`, which is exact for
+    /// a fixed-price solver. A metered provider (W6) reports actual token usage,
+    /// so the CLI overrides the number after the arm has run.
+    #[must_use]
+    pub fn with_cost_usd(mut self, cost_usd: f64) -> Self {
+        if cost_usd.is_finite() && cost_usd >= 0.0 {
+            self.cost_usd = cost_usd;
+        }
+        self
+    }
 }
 
 /// Default seed recorded when the operator does not pass one.
@@ -195,25 +228,60 @@ impl Evaluator {
     /// Runs A, B and C in-process with the same solver and budget. Useful for
     /// offline smoke checks; the verdict still follows the paired statistics.
     pub fn run_matrix(&self, solver: &dyn Solver, split: Split) -> Result<Arms, SilynError> {
-        let backend = InProcessBackend::new(solver);
-        let budget = Default::default();
-        Ok(Arms {
-            a: self.run_split(
-                &backend,
-                &ArmConfig::baseline(ArmId::A, "mock", budget),
-                split,
-            )?,
-            b: self.run_split(
-                &backend,
-                &ArmConfig::baseline(ArmId::B, "mock", budget),
-                split,
-            )?,
-            c: self.run_split(
-                &backend,
-                &ArmConfig::baseline(ArmId::C, "mock", budget),
-                split,
-            )?,
-        })
+        let configs = ArmsConfig::baseline("mock", Default::default());
+        let solvers = ArmSolvers {
+            a: solver,
+            b: solver,
+            c: solver,
+        };
+        self.run_matrix_with(&configs, &solvers, split)
+    }
+
+    /// Runs A, B and C in-process, each with its own solver and the declared
+    /// configuration.
+    ///
+    /// This is the W6 entry point: one solver per arm (arm A has no context, B
+    /// memory only, C memory and policy), while every arm shares the solver id,
+    /// model, budget and price through [`ArmsConfig::validate_equal_budget`]. The
+    /// sealed split is refused here; use [`Evaluator::run_sealed_matrix_with`].
+    pub fn run_matrix_with(
+        &self,
+        configs: &ArmsConfig,
+        solvers: &ArmSolvers<'_>,
+        split: Split,
+    ) -> Result<Arms, SilynError> {
+        if split.is_sealed() {
+            return Err(SilynError::PolicyDenied(
+                "the test split is sealed; use SealedTestSet::load_for_manifest".to_owned(),
+            ));
+        }
+        configs.validate_equal_budget()?;
+        let tasks = generate_split(split)?;
+        Ok(self.run_matrix_tasks(&tasks, configs, solvers))
+    }
+
+    /// Runs the sealed test set in-process, one solver per arm.
+    pub fn run_sealed_matrix_with(
+        &self,
+        configs: &ArmsConfig,
+        solvers: &ArmSolvers<'_>,
+        set: &SealedTestSet,
+    ) -> Result<Arms, SilynError> {
+        configs.validate_equal_budget()?;
+        Ok(self.run_matrix_tasks(set.tasks(), configs, solvers))
+    }
+
+    fn run_matrix_tasks(
+        &self,
+        tasks: &[Task],
+        configs: &ArmsConfig,
+        solvers: &ArmSolvers<'_>,
+    ) -> Arms {
+        Arms {
+            a: self.run_tasks(tasks, &InProcessBackend::new(solvers.a), &configs.a),
+            b: self.run_tasks(tasks, &InProcessBackend::new(solvers.b), &configs.b),
+            c: self.run_tasks(tasks, &InProcessBackend::new(solvers.c), &configs.c),
+        }
     }
 
     /// Evaluates one arm over a train or dev split through a backend.

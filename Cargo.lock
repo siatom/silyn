@@ -1625,7 +1625,9 @@ dependencies = [
  "serde_json",
  "sha2",
  "silyn-core",
+ "silyn-llm",
  "tempfile",
+ "tokio",
  "toml",
  "uuid",
 ]

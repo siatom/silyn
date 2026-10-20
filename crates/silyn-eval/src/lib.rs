@@ -13,17 +13,21 @@
 //!   evaluation but no public task or oracle accessor;
 //! - the CLI runs every attempt in a child process with a scrubbed environment,
 //!   a fresh working directory and a wall-clock timeout;
+//! - the W6 model solver runs in-process (it needs the provider key) and receives
+//!   only declared, untrusted context; the subprocess worker keeps the baseline;
 //! - arms A, B and C share solver, model, budget and price; only the recorded
-//!   capability flags differ.
+//!   capability flags and the declared context differ.
 
 pub mod arm;
 pub mod backend;
 pub mod baseline;
+pub mod context;
 pub mod evaluator;
 pub mod generator;
 pub mod integrity;
 pub mod isolation;
 pub mod manifest;
+pub mod model_solver;
 pub mod report;
 pub mod sealed;
 pub mod statistics;
@@ -34,9 +38,11 @@ mod rng;
 pub use arm::{ArmConfig, ArmId, Arms, ArmsConfig};
 pub use backend::{InProcessBackend, RunnerBackend, TaskAttempt, TaskBudget, TaskFailureKind};
 pub use baseline::BaselineSolver;
-pub use evaluator::{ArmOutcome, Evaluator, FailureRecord, Solver, TaskResult};
+pub use context::{ArmContext, ArmContextRecord, ContextProvenance};
+pub use evaluator::{ArmOutcome, ArmSolvers, Evaluator, FailureRecord, Solver, TaskResult};
 pub use isolation::{SubprocessBackend, WorkerFault};
 pub use manifest::SuiteManifest;
+pub use model_solver::{MODEL_SOLVER_ID, ModelSolver};
 pub use report::{EvaluationReport, render_markdown};
 pub use sealed::SealedTestSet;
 pub use statistics::{
