@@ -1,7 +1,7 @@
-# W7-03: Observability, hardening, CI matrix and operator docs
+# W7-03a: CI matrix, docs gate and operator documentation
 
 ```yaml
-id: W7-03
+id: W7-03a
 wave: 7
 depends_on: [W3-03, W5-03]
 owns:
@@ -12,11 +12,8 @@ owns:
   - docs/architecture/observability.md
   - .github/workflows/ci.yml
   - xtask/src/main.rs
-  - crates/silyn-runtime/src/telemetry.rs
-  - crates/silyn-runtime/src/lib.rs
-  - crates/silyn-runtime/Cargo.toml
-  - eval/acceptance/w7-03.toml
-  - docs/gates/w7-03.md
+  - eval/acceptance/w7-03a.toml
+  - docs/gates/w7-03a.md
 reads:
   - docs/architecture/**
   - crates/silyn-runtime/src/**
@@ -39,10 +36,9 @@ acceptance_registry:
   - docs.operations_rollback
   - ci.three_platforms
   - xtask.docs_gate
-  - telemetry.no_secret_fields
 commands:
-  - cargo test -p silyn-runtime -p xtask
-  - cargo clippy -p silyn-runtime -p xtask --all-targets -- -D warnings
+  - cargo test -p xtask
+  - cargo clippy -p xtask --all-targets -- -D warnings
   - cargo run -p xtask -- verify-docs
   - cargo run -p xtask -- verify-acceptance
 ```
@@ -54,17 +50,6 @@ quickstart, security/operations runbooks, a three-platform CI matrix, a docs
 gate, and a tracing layer whose fields cannot leak secrets.
 
 ## Deliverables
-
-### Telemetry
-
-- Add `tracing` to `silyn-runtime` and a `telemetry.rs` module with span
-  helpers named `run`, `step`, `model`, `tool`, `checkpoint`, `verify`.
-- Fields: `run_id`, `step_seq`, `tool`, `model`, `status`, `latency_ms`,
-  `input_tokens`, `output_tokens`, `cost_usd`. Never include prompts, API keys,
-  tool content, memory content or user text.
-- A `redact` helper and a unit test that a key-shaped string is rejected from
-  span fields.
-- Optional OTel export is documented but not required; no new heavy dependency.
 
 ### Docs
 
@@ -96,22 +81,22 @@ gate, and a tracing layer whose fields cannot leak secrets.
 ## Tests
 
 - xtask unit tests for the docs gate (positive and missing-section negative).
-- telemetry redaction test; span field names are compile-time constants.
 - CI YAML contains all three runners and the required commands (string check in
   xtask test, no YAML parser dependency required).
 
-Add `eval/acceptance/w7-03.toml` with one gate per test, `required = true`.
-Add `docs/gates/w7-03.md`.
+Add `eval/acceptance/w7-03a.toml` with one gate per test, `required = true`.
+Add `docs/gates/w7-03a.md`. Telemetry spans/redaction are a follow-up
+(W7-03b) after the runtime/API surfaces stabilize.
 
 ## Commands and commit
 
 ```bash
 cargo fmt --all
-cargo test -p silyn-runtime -p xtask
-cargo clippy -p silyn-runtime -p xtask --all-targets -- -D warnings
+cargo test -p xtask
+cargo clippy -p xtask --all-targets -- -D warnings
 cargo run -p xtask -- verify-docs
 cargo run -p xtask -- verify-acceptance
 ```
 
 Commit once on `wave7-docs` with
-`docs: add operator guide, telemetry and three-platform ci`.
+`docs: add operator guide and three-platform ci`.
