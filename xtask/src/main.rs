@@ -16,6 +16,7 @@ fn main() -> ExitCode {
     let command = std::env::args().nth(1).unwrap_or_default();
     let result = match command.as_str() {
         "verify-acceptance" => verify_acceptance(),
+        "verify-docs" => verify_docs(),
         "verify-migrations" => verify_migrations(),
         "hash-migrations" => hash_migrations(),
         "verify-schemas" => verify_schemas(),
@@ -24,7 +25,7 @@ fn main() -> ExitCode {
         other => {
             eprintln!(
                 "unknown command `{other}`\nusage: cargo run -p xtask -- \
-                 <verify-acceptance|verify-migrations|hash-migrations|verify-schemas|verify-arch|verify-eval-integrity>"
+                 <verify-acceptance|verify-docs|verify-migrations|hash-migrations|verify-schemas|verify-arch|verify-eval-integrity>"
             );
             return ExitCode::FAILURE;
         }
@@ -54,6 +55,301 @@ fn sha256_file(path: &Path) -> Result<String> {
     let mut hasher = Sha256::new();
     hasher.update(&bytes);
     Ok(format!("{:x}", hasher.finalize()))
+}
+
+/// A shipped document the operator guide depends on.
+struct DocSpec {
+    path: &'static str,
+    sections: &'static [&'static str],
+}
+
+/// Headings every required document must contain.
+///
+/// The gate is deliberately literal: these are the sections an operator needs
+/// when something is on fire, and a heading is the cheapest stable anchor.
+const REQUIRED_DOCS: &[DocSpec] = &[
+    DocSpec {
+        path: "docs/security.md",
+        sections: &[
+            "## Trust boundaries",
+            "## Capabilities and default deny",
+            "## Cancel file",
+            "## Secrets",
+            "## Sealed evaluation suite",
+            "## Threat model",
+            "## Reporting a vulnerability",
+        ],
+    },
+    DocSpec {
+        path: "docs/operations.md",
+        sections: &[
+            "## Backup",
+            "## Restore",
+            "## Retention and purge",
+            "## Policy rollback",
+            "## Kill and resume",
+            "## Indeterminate tool calls",
+            "## Logs",
+            "## Local-only assumptions",
+        ],
+    },
+    DocSpec {
+        path: "docs/experiments/template.md",
+        sections: &[
+            "## Identity",
+            "## Suite",
+            "## Budget",
+            "## Per-arm results",
+            "## Paired comparison",
+            "## Verdict",
+            "## Reproduction",
+        ],
+    },
+    DocSpec {
+        path: "docs/architecture/observability.md",
+        sections: &[
+            "## Status",
+            "## Span names",
+            "## Fields",
+            "## Redaction rules",
+        ],
+    },
+];
+
+const README_SECTIONS: &[&str] = &["## Quickstart", "## Security", "## License"];
+
+fn verify_docs() -> Result<()> {
+    verify_docs_in(&root())?;
+    println!("docs verified");
+    Ok(())
+}
+
+fn verify_docs_in(root: &Path) -> Result<()> {
+    let readme_path = root.join("README.md");
+    let readme = fs::read_to_string(&readme_path)
+        .with_context(|| format!("read {}", readme_path.display()))?;
+    check_markdown_sections(&readme_path, &readme, README_SECTIONS)?;
+
+    for spec in REQUIRED_DOCS {
+        let path = root.join(spec.path);
+        let text = fs::read_to_string(&path)
+            .with_context(|| format!("read required doc {}", path.display()))?;
+        check_markdown_sections(&path, &text, spec.sections)?;
+    }
+
+    let documents = shipped_docs(root)?;
+    for path in &documents {
+        let text = fs::read_to_string(path)
+            .with_context(|| format!("read shipped doc {}", path.display()))?;
+        check_docs_links(root, path, &text)?;
+        check_unresolved_placeholders(path, &text)?;
+    }
+
+    Ok(())
+}
+
+fn check_markdown_sections(path: &Path, text: &str, sections: &[&str]) -> Result<()> {
+    if !text.starts_with("# ") {
+        bail!("{} must start with a level-1 title", path.display());
+    }
+    for section in sections {
+        if !text.contains(section) {
+            bail!("{} is missing required section `{section}`", path.display());
+        }
+    }
+    Ok(())
+}
+
+/// Markdown files that ship to users: the README and `docs/**`.
+///
+/// `docs/agents/tasks/**` holds internal task packages (which legitimately talk
+/// about `TODO` as a rule) and `docs.local/**` is never committed, so neither is
+/// part of the shipped surface.
+fn shipped_docs(root: &Path) -> Result<Vec<PathBuf>> {
+    let mut documents = Vec::new();
+    if root.join("README.md").is_file() {
+        documents.push(root.join("README.md"));
+    }
+    collect_markdown(&root.join("docs"), &mut documents)?;
+
+    documents.retain(|path| {
+        let relative = path
+            .strip_prefix(root)
+            .unwrap_or(path)
+            .to_string_lossy()
+            .replace('\\', "/");
+        !relative.starts_with("docs/agents/tasks/")
+    });
+    documents.sort();
+    Ok(documents)
+}
+
+fn collect_markdown(dir: &Path, documents: &mut Vec<PathBuf>) -> Result<()> {
+    if !dir.is_dir() {
+        return Ok(());
+    }
+    for entry in fs::read_dir(dir).with_context(|| format!("read {}", dir.display()))? {
+        let path = entry?.path();
+        if path.is_dir() {
+            let name = path.file_name().and_then(|value| value.to_str());
+            if matches!(name, Some("docs.local" | "target" | ".git")) {
+                continue;
+            }
+            collect_markdown(&path, documents)?;
+        } else if path.extension().and_then(|value| value.to_str()) == Some("md") {
+            documents.push(path);
+        }
+    }
+    Ok(())
+}
+
+fn check_docs_links(root: &Path, path: &Path, text: &str) -> Result<()> {
+    for target in markdown_link_targets(text) {
+        if target.starts_with("docs.local") || target.contains("/docs.local") {
+            bail!(
+                "{} links to `{target}`; private documents must not ship",
+                path.display()
+            );
+        }
+        if is_external_link(&target) {
+            continue;
+        }
+
+        let path_part = target
+            .split('#')
+            .next()
+            .unwrap_or_default()
+            .split('?')
+            .next()
+            .unwrap_or_default();
+        if path_part.is_empty() {
+            continue;
+        }
+
+        let resolved = if let Some(stripped) = path_part.strip_prefix('/') {
+            root.join(stripped)
+        } else {
+            path.parent().unwrap_or(root).join(path_part)
+        };
+        if !resolved.exists() {
+            bail!(
+                "{} has a broken relative link `{target}` (resolved to {})",
+                path.display(),
+                resolved.display()
+            );
+        }
+    }
+    Ok(())
+}
+
+fn is_external_link(target: &str) -> bool {
+    target.starts_with('#')
+        || target.starts_with("http://")
+        || target.starts_with("https://")
+        || target.starts_with("mailto:")
+}
+
+/// Extracts `[text](target)` and `![alt](target)` targets, ignoring fenced and
+/// inline code so command examples cannot trip the link gate.
+fn markdown_link_targets(text: &str) -> Vec<String> {
+    let text = strip_markdown_code(text);
+    let mut targets = Vec::new();
+    let mut cursor = 0_usize;
+
+    while let Some(offset) = text[cursor..].find("](") {
+        let start = cursor + offset + 2;
+        let Some(end_offset) = text[start..].find(')') else {
+            break;
+        };
+        let end = start + end_offset;
+        let raw = text[start..end].trim();
+        let raw = raw
+            .strip_prefix('<')
+            .and_then(|value| value.strip_suffix('>'))
+            .unwrap_or(raw);
+        let target = raw.split_whitespace().next().unwrap_or_default();
+        if !target.is_empty() {
+            targets.push(target.to_owned());
+        }
+        cursor = end + 1;
+    }
+
+    targets
+}
+
+fn strip_markdown_code(text: &str) -> String {
+    let mut stripped = String::new();
+    let mut in_fence = false;
+    for line in text.lines() {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
+            in_fence = !in_fence;
+            continue;
+        }
+        if in_fence {
+            continue;
+        }
+        for (index, chunk) in line.split('`').enumerate() {
+            if index % 2 == 0 {
+                stripped.push_str(chunk);
+            }
+        }
+        stripped.push('\n');
+    }
+    stripped
+}
+
+fn check_unresolved_placeholders(path: &Path, text: &str) -> Result<()> {
+    // Inline code often describes the rule itself (“no unresolved `TODO`”), so
+    // inline spans are ignored. Fenced examples are still checked: a marker left
+    // in a command or template is unresolved.
+    let prose = strip_inline_code(text);
+    for marker in ["TODO", "TBD"] {
+        if contains_word(&prose, marker) {
+            bail!(
+                "{} contains an unresolved `{marker}` marker; ship a decision instead",
+                path.display()
+            );
+        }
+    }
+    Ok(())
+}
+
+/// Removes inline code spans while keeping fenced blocks and their content.
+fn strip_inline_code(text: &str) -> String {
+    let mut stripped = String::new();
+    let mut in_fence = false;
+    for line in text.lines() {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
+            in_fence = !in_fence;
+            stripped.push('\n');
+            continue;
+        }
+        if in_fence {
+            stripped.push_str(line);
+            stripped.push('\n');
+            continue;
+        }
+        for (index, chunk) in line.split('`').enumerate() {
+            if index % 2 == 0 {
+                stripped.push_str(chunk);
+            }
+        }
+        stripped.push('\n');
+    }
+    stripped
+}
+
+fn contains_word(text: &str, word: &str) -> bool {
+    text.match_indices(word).any(|(index, _)| {
+        let before = text[..index].chars().next_back();
+        let after = text[index + word.len()..].chars().next();
+        let boundary = |value: Option<char>| {
+            !value.is_some_and(|character| character.is_ascii_alphanumeric() || character == '_')
+        };
+        boundary(before) && boundary(after)
+    })
 }
 
 fn verify_acceptance() -> Result<()> {
@@ -329,4 +625,223 @@ fn verify_eval_integrity() -> Result<()> {
 
     println!("sealed suites verified: {locked}");
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    use super::*;
+
+    struct TempWorkspace {
+        path: PathBuf,
+    }
+
+    impl TempWorkspace {
+        fn new(name: &str) -> Self {
+            static COUNTER: AtomicU32 = AtomicU32::new(0);
+            let path = std::env::temp_dir().join(format!(
+                "silyn-xtask-{name}-{}-{}",
+                std::process::id(),
+                COUNTER.fetch_add(1, Ordering::Relaxed)
+            ));
+            if path.exists() {
+                fs::remove_dir_all(&path).expect("clean temp workspace");
+            }
+            fs::create_dir_all(&path).expect("create temp workspace");
+            Self { path }
+        }
+
+        fn path(&self) -> &Path {
+            &self.path
+        }
+
+        fn write(&self, relative: &str, text: &str) {
+            let path = self.path.join(relative);
+            if let Some(parent) = path.parent() {
+                fs::create_dir_all(parent).expect("create fixture directory");
+            }
+            fs::write(path, text).expect("write fixture");
+        }
+    }
+
+    impl Drop for TempWorkspace {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.path);
+        }
+    }
+
+    fn write_valid_docs(workspace: &TempWorkspace) {
+        workspace.write(
+            "README.md",
+            "# Fixture\n\n## Quickstart\n\n[security](docs/security.md)\n\n\
+             ## Security\n\nMIT licensed.\n\n## License\n\nMIT.\n",
+        );
+        workspace.write(
+            "docs/security.md",
+            "# Security\n\n## Trust boundaries\n\n## Capabilities and default deny\n\n\
+             ## Cancel file\n\n## Secrets\n\n## Sealed evaluation suite\n\n\
+             ## Threat model\n\n## Reporting a vulnerability\n",
+        );
+        workspace.write(
+            "docs/operations.md",
+            "# Operations\n\n## Backup\n\n## Restore\n\n## Retention and purge\n\n\
+             ## Policy rollback\n\n## Kill and resume\n\n## Indeterminate tool calls\n\n\
+             ## Logs\n\n## Local-only assumptions\n",
+        );
+        workspace.write(
+            "docs/experiments/template.md",
+            "# Experiment template\n\n## Identity\n\n## Suite\n\n## Budget\n\n\
+             ## Per-arm results\n\n## Paired comparison\n\n## Verdict\n\n## Reproduction\n",
+        );
+        workspace.write(
+            "docs/architecture/observability.md",
+            "# Observability\n\n## Status\n\n## Span names\n\n## Fields\n\n\
+             ## Redaction rules\n",
+        );
+    }
+
+    fn check_real_doc(path: &str) {
+        let root = root();
+        let spec = REQUIRED_DOCS
+            .iter()
+            .find(|spec| spec.path == path)
+            .expect("doc is registered in REQUIRED_DOCS");
+        let full = root.join(path);
+        let text = fs::read_to_string(&full).expect("read shipped doc");
+        check_markdown_sections(&full, &text, spec.sections).expect("sections present");
+    }
+
+    #[test]
+    fn docs_gate_accepts_repository() {
+        verify_docs_in(&root()).expect("repository docs satisfy the gate");
+    }
+
+    #[test]
+    fn readme_has_quickstart_security_and_license() {
+        let path = root().join("README.md");
+        let text = fs::read_to_string(&path).expect("read README");
+        check_markdown_sections(&path, &text, README_SECTIONS).expect("README sections present");
+    }
+
+    #[test]
+    fn security_doc_covers_trust_boundaries() {
+        check_real_doc("docs/security.md");
+    }
+
+    #[test]
+    fn operations_doc_covers_recovery() {
+        check_real_doc("docs/operations.md");
+    }
+
+    #[test]
+    fn experiment_template_records_protocol() {
+        check_real_doc("docs/experiments/template.md");
+    }
+
+    #[test]
+    fn observability_doc_defines_span_contract() {
+        check_real_doc("docs/architecture/observability.md");
+    }
+
+    #[test]
+    fn docs_gate_rejects_missing_section() {
+        let workspace = TempWorkspace::new("missing-section");
+        write_valid_docs(&workspace);
+        workspace.write(
+            "README.md",
+            "# Fixture\n\n## Quickstart\n\n## Security\n\nNo license heading.\n",
+        );
+
+        let error = verify_docs_in(workspace.path()).expect_err("missing section must fail");
+        assert!(
+            format!("{error:#}").contains("missing required section `## License`"),
+            "unexpected error: {error:#}"
+        );
+    }
+
+    #[test]
+    fn docs_gate_rejects_docs_local_link() {
+        let workspace = TempWorkspace::new("docs-local");
+        write_valid_docs(&workspace);
+        let readme = format!(
+            "{}\n[private](docs.local/plan.md)\n",
+            fs::read_to_string(workspace.path().join("README.md")).expect("read fixture README")
+        );
+        workspace.write("README.md", &readme);
+
+        let error = verify_docs_in(workspace.path()).expect_err("docs.local link must fail");
+        assert!(
+            format!("{error:#}").contains("docs.local"),
+            "unexpected error: {error:#}"
+        );
+    }
+
+    #[test]
+    fn docs_gate_rejects_unresolved_todo() {
+        let workspace = TempWorkspace::new("todo");
+        write_valid_docs(&workspace);
+        let security = format!(
+            "{}\nTODO: describe the remaining boundary.\n",
+            fs::read_to_string(workspace.path().join("docs/security.md")).expect("read fixture")
+        );
+        workspace.write("docs/security.md", &security);
+
+        let error = verify_docs_in(workspace.path()).expect_err("TODO must fail");
+        assert!(
+            format!("{error:#}").contains("unresolved `TODO`"),
+            "unexpected error: {error:#}"
+        );
+    }
+
+    #[test]
+    fn docs_gate_rejects_broken_relative_link() {
+        let workspace = TempWorkspace::new("broken-link");
+        write_valid_docs(&workspace);
+        let readme = format!(
+            "{}\n[missing](docs/does-not-exist.md)\n",
+            fs::read_to_string(workspace.path().join("README.md")).expect("read fixture README")
+        );
+        workspace.write("README.md", &readme);
+
+        let error = verify_docs_in(workspace.path()).expect_err("broken link must fail");
+        assert!(
+            format!("{error:#}").contains("broken relative link"),
+            "unexpected error: {error:#}"
+        );
+    }
+
+    #[test]
+    fn ci_workflow_has_three_platforms() {
+        let path = root().join(".github/workflows/ci.yml");
+        let workflow = fs::read_to_string(&path).expect("read CI workflow");
+        for runner in ["windows-latest", "ubuntu-latest", "macos-latest"] {
+            assert!(workflow.contains(runner), "CI matrix is missing {runner}");
+        }
+        assert!(workflow.contains("1.99.0"), "CI must pin Rust 1.99");
+    }
+
+    #[test]
+    fn ci_workflow_runs_all_gates() {
+        let path = root().join(".github/workflows/ci.yml");
+        let workflow = fs::read_to_string(&path).expect("read CI workflow");
+        for command in [
+            "cargo fmt --all --check",
+            "cargo clippy --workspace --all-targets -- -D warnings",
+            "cargo test --workspace",
+            "cargo build --workspace --release",
+            "cargo run -p xtask -- verify-docs",
+            "cargo run -p xtask -- verify-acceptance",
+            "cargo run -p xtask -- verify-migrations",
+            "cargo run -p xtask -- verify-schemas",
+            "cargo run -p xtask -- verify-arch",
+            "cargo run -p xtask -- verify-eval-integrity",
+        ] {
+            assert!(workflow.contains(command), "CI is missing `{command}`");
+        }
+        assert!(
+            !workflow.contains("secrets."),
+            "CI must not consume repository secrets"
+        );
+    }
 }
