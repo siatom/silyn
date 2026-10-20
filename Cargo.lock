@@ -1579,6 +1579,7 @@ dependencies = [
  "chrono",
  "serde",
  "serde_json",
+ "sha2",
  "silyn-core",
  "silyn-growth",
  "silyn-llm",

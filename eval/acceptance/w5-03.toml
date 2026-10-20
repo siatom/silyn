@@ -1,0 +1,59 @@
+# W5-03 acceptance gates: the evolution CLI and the mock golden path.
+#
+# `cargo run -p xtask -- verify-acceptance` resolves every entry against the
+# real test source. Removing or renaming a test requires an integrator commit.
+
+[[gate]]
+id = "cli.evolution_init_creates_policy"
+test = "crates/silyn-cli/tests/evolution.rs::evolution_init_creates_active_policy"
+required = true
+
+[[gate]]
+id = "cli.evolution_submit_static_checked"
+test = "crates/silyn-cli/tests/evolution.rs::evolution_submit_valid_patch_is_static_checked"
+required = true
+
+[[gate]]
+id = "cli.evolution_reject_forbidden_patch"
+test = "crates/silyn-cli/tests/evolution.rs::evolution_forbidden_patch_exits_five"
+required = true
+
+[[gate]]
+id = "cli.evolution_attach_report"
+test = "crates/silyn-cli/tests/evolution.rs::evolution_evaluate_attaches_report"
+required = true
+
+[[gate]]
+id = "cli.evolution_low_risk_promote"
+test = "crates/silyn-cli/tests/evolution.rs::evolution_low_risk_promotes_with_audit"
+required = true
+
+[[gate]]
+id = "cli.evolution_rollback"
+test = "crates/silyn-cli/tests/evolution.rs::evolution_rollback_restores_and_blocks_second"
+required = true
+
+[[gate]]
+id = "cli.evolution_high_risk_awaits"
+test = "crates/silyn-cli/tests/evolution.rs::evolution_high_risk_awaits_then_approves"
+required = true
+
+[[gate]]
+id = "cli.evolution_unknown_ids"
+test = "crates/silyn-cli/tests/evolution.rs::evolution_unknown_ids_exit_five"
+required = true
+
+[[gate]]
+id = "cli.evolution_usage_errors"
+test = "crates/silyn-cli/tests/evolution.rs::evolution_usage_errors_exit_two"
+required = true
+
+[[gate]]
+id = "cli.evolution_report_candidate_mismatch"
+test = "crates/silyn-cli/tests/evolution.rs::evolution_rejects_mismatched_report_candidate"
+required = true
+
+[[gate]]
+id = "cli.evolution_missing_stats_companion"
+test = "crates/silyn-cli/tests/evolution.rs::evolution_rejects_missing_stats_companion"
+required = true

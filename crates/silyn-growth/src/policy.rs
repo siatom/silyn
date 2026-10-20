@@ -231,6 +231,30 @@ impl<'a> PolicyStore<'a> {
         };
         load_version(&mut connection, agent_id, id).await
     }
+
+    /// Points the agent at an existing version and returns that version.
+    ///
+    /// The version is loaded with the agent filter first, so a version that
+    /// belongs to another agent (or does not exist) is a permanent error and the
+    /// pointer is left untouched. This is the bootstrap/rollback primitive; the
+    /// promotion gate owns the audited path.
+    pub async fn activate(
+        &self,
+        agent_id: AgentId,
+        version_id: PolicyVersionId,
+    ) -> Result<PolicyVersionRecord, SilynError> {
+        let mut transaction = self.pool.begin().await.map_err(db_error)?;
+        let record = load_version(&mut transaction, agent_id, version_id)
+            .await?
+            .ok_or_else(|| {
+                SilynError::Permanent(format!(
+                    "policy version {version_id} not found for agent {agent_id}"
+                ))
+            })?;
+        set_active_policy_version(&mut transaction, agent_id, version_id).await?;
+        transaction.commit().await.map_err(db_error)?;
+        Ok(record)
+    }
 }
 
 /// Inserts one version inside the caller's transaction.
