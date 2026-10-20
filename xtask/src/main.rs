@@ -57,54 +57,75 @@ fn sha256_file(path: &Path) -> Result<String> {
 }
 
 fn verify_acceptance() -> Result<()> {
-    let registry_path = root().join("eval/acceptance/registry.toml");
-    let text = fs::read_to_string(&registry_path)
-        .with_context(|| format!("read {}", registry_path.display()))?;
-    let value: toml::Value = toml::from_str(&text).context("parse acceptance registry")?;
-    let gates = value
-        .get("gate")
-        .and_then(toml::Value::as_array)
-        .context("registry must contain at least one [[gate]] entry")?;
+    let dir = root().join("eval/acceptance");
+    let mut files = Vec::new();
+    for entry in fs::read_dir(&dir).context("read eval/acceptance")? {
+        let path = entry?.path();
+        if path.extension().and_then(|value| value.to_str()) == Some("toml") {
+            files.push(path);
+        }
+    }
+    files.sort();
 
-    for gate in gates {
-        let id = gate
-            .get("id")
-            .and_then(toml::Value::as_str)
-            .context("gate.id must be a string")?;
-        let test = gate
-            .get("test")
-            .and_then(toml::Value::as_str)
-            .context("gate.test must be a string")?;
-        let required = gate
-            .get("required")
-            .and_then(toml::Value::as_bool)
-            .unwrap_or(true);
+    let mut seen_ids = std::collections::BTreeSet::new();
+    let mut total = 0_usize;
 
-        let (file, name) = test
-            .split_once("::")
-            .with_context(|| format!("gate `{id}` test must be `<path>::<fn>`"))?;
-        let path = root().join(file);
-        let source = fs::read_to_string(&path)
-            .with_context(|| format!("gate `{id}` references missing file {}", path.display()))?;
-        let needle = format!("fn {name}");
-        let index = source
-            .find(&needle)
-            .with_context(|| format!("gate `{id}` references missing test `{name}` in {file}"))?;
+    for file in files {
+        let text = fs::read_to_string(&file).with_context(|| format!("read {}", file.display()))?;
+        let value: toml::Value =
+            toml::from_str(&text).with_context(|| format!("parse {}", file.display()))?;
+        let Some(gates) = value.get("gate").and_then(toml::Value::as_array) else {
+            continue;
+        };
 
-        if required {
-            let start = source[..index]
-                .char_indices()
-                .rev()
-                .take(200)
-                .last()
-                .map_or(0, |(offset, _)| offset);
-            if source[start..index].contains("#[ignore") {
-                bail!("gate `{id}` test `{name}` is #[ignore]d but marked required");
+        for gate in gates {
+            let id = gate
+                .get("id")
+                .and_then(toml::Value::as_str)
+                .context("gate.id must be a string")?;
+            if !seen_ids.insert(id.to_owned()) {
+                bail!("duplicate gate id `{id}`");
             }
+            let test = gate
+                .get("test")
+                .and_then(toml::Value::as_str)
+                .context("gate.test must be a string")?;
+            let required = gate
+                .get("required")
+                .and_then(toml::Value::as_bool)
+                .unwrap_or(true);
+
+            let (source_file, name) = test
+                .split_once("::")
+                .with_context(|| format!("gate `{id}` test must be `<path>::<fn>`"))?;
+            let path = root().join(source_file);
+            let source = fs::read_to_string(&path).with_context(|| {
+                format!("gate `{id}` references missing file {}", path.display())
+            })?;
+            let needle = format!("fn {name}");
+            let index = source.find(&needle).with_context(|| {
+                format!("gate `{id}` references missing test `{name}` in {source_file}")
+            })?;
+
+            if required {
+                let start = source[..index]
+                    .char_indices()
+                    .rev()
+                    .take(200)
+                    .last()
+                    .map_or(0, |(offset, _)| offset);
+                if source[start..index].contains("#[ignore") {
+                    bail!("gate `{id}` test `{name}` is #[ignore]d but marked required");
+                }
+            }
+            total += 1;
         }
     }
 
-    println!("acceptance gates: {}", gates.len());
+    if total == 0 {
+        bail!("no acceptance gates found");
+    }
+    println!("acceptance gates: {total}");
     Ok(())
 }
 
