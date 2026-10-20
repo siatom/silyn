@@ -1,0 +1,100 @@
+# W4-02 acceptance gates: evidence-based verification and provisional
+# experience extraction.
+#
+# `cargo run -p xtask -- verify-acceptance` resolves every entry against the
+# real test source. Removing or renaming a test requires an integrator commit.
+
+[[gate]]
+id = "verify.success_requires_independent_evidence"
+test = "crates/silyn-growth/tests/verifier.rs::success_requires_independent_evidence"
+required = true
+
+[[gate]]
+id = "verify.failed_dominates_unknown"
+test = "crates/silyn-growth/tests/verifier.rs::failed_dominates_unknown"
+required = true
+
+[[gate]]
+id = "verify.no_checker_is_unknown"
+test = "crates/silyn-growth/tests/verifier.rs::no_checker_is_unknown"
+required = true
+
+[[gate]]
+id = "verify.expected_answer_json_subset"
+test = "crates/silyn-growth/tests/verifier.rs::expected_answer_json_subset"
+required = true
+
+[[gate]]
+id = "verify.malformed_artifact_is_failed"
+test = "crates/silyn-growth/tests/verifier.rs::malformed_artifact_is_failed"
+required = true
+
+[[gate]]
+id = "verify.artifact_refs_inline_file_plain"
+test = "crates/silyn-growth/tests/verifier.rs::artifact_refs_load_inline_file_and_plain"
+required = true
+
+[[gate]]
+id = "verify.artifact_sandbox_rejects_escape"
+test = "crates/silyn-growth/tests/verifier.rs::artifact_sandbox_rejects_escape"
+required = true
+
+[[gate]]
+id = "verify.file_contains_missing_text"
+test = "crates/silyn-growth/tests/verifier.rs::file_contains_checker_reports_missing_text"
+required = true
+
+[[gate]]
+id = "verify.all_must_succeed_is_strict"
+test = "crates/silyn-growth/tests/verifier.rs::all_must_succeed_policy_is_strict"
+required = true
+
+[[gate]]
+id = "experience.failed_run_creates_provisional"
+test = "crates/silyn-growth/tests/experience.rs::failed_run_creates_provisional"
+required = true
+
+[[gate]]
+id = "experience.success_creates_positive_provisional"
+test = "crates/silyn-growth/tests/experience.rs::success_creates_positive_provisional"
+required = true
+
+[[gate]]
+id = "experience.unknown_creates_no_success"
+test = "crates/silyn-growth/tests/experience.rs::unknown_creates_no_success"
+required = true
+
+[[gate]]
+id = "experience.deduplicates_lesson"
+test = "crates/silyn-growth/tests/experience.rs::deduplicates_lesson"
+required = true
+
+[[gate]]
+id = "experience.confirm_requires_two_runs"
+test = "crates/silyn-growth/tests/experience.rs::confirm_requires_two_runs"
+required = true
+
+[[gate]]
+id = "experience.unknown_evidence_never_confirms"
+test = "crates/silyn-growth/tests/experience.rs::unknown_evidence_never_confirms"
+required = true
+
+[[gate]]
+id = "experience.cross_agent_isolation"
+test = "crates/silyn-growth/tests/experience.rs::cross_agent_isolation"
+required = true
+
+[[gate]]
+id = "experience.retire_then_reextract_creates_new_active"
+test = "crates/silyn-growth/tests/experience.rs::retire_then_reextract_creates_new_active"
+required = true
+
+[[gate]]
+id = "experience.retired_experience_cannot_be_confirmed"
+test = "crates/silyn-growth/tests/experience.rs::retired_experience_cannot_be_confirmed"
+required = true
+
+[[gate]]
+id = "experience.extract_rejects_foreign_run"
+test = "crates/silyn-growth/tests/experience.rs::extract_rejects_foreign_run"
+required = true
