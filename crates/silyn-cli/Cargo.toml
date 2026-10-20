@@ -15,6 +15,7 @@ path = "src/main.rs"
 chrono.workspace = true
 clap.workspace = true
 dotenvy.workspace = true
+silyn-api = { path = "../silyn-api" }
 silyn-app = { path = "../silyn-app" }
 silyn-core = { path = "../silyn-core" }
 silyn-llm = { path = "../silyn-llm" }
