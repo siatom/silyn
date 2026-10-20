@@ -3,12 +3,14 @@
 //! The CLI (W2) and the HTTP API (W7) are thin adapters over this crate. Business
 //! rules live here so both frontends share identical behavior.
 
+mod api_support;
 mod app;
 mod evolution;
 mod learning;
 mod observability;
 mod runtime_service;
 
+pub use api_support::default_model;
 pub use app::{
     App, DEFAULT_CONTEXT_VERSION, DEFAULT_PROFILE_VERSION, InitReport, RECENT_RUNS_LIMIT,
 };

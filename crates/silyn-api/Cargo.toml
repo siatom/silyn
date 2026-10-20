@@ -1,0 +1,29 @@
+[package]
+name = "silyn-api"
+description = "Local HTTP and SSE surface for the Silyn application service"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+name = "silyn_api"
+path = "src/lib.rs"
+
+[dependencies]
+silyn-app = { path = "../silyn-app" }
+silyn-core = { path = "../silyn-core" }
+axum = "0.8"
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+tokio = { workspace = true, features = ["net", "signal", "sync", "time"] }
+tokio-stream = { version = "0.1", features = ["sync"] }
+uuid.workspace = true
+
+[dev-dependencies]
+silyn-llm = { path = "../silyn-llm" }
+silyn-runtime = { path = "../silyn-runtime" }
+tempfile.workspace = true
+tower = { version = "0.5", features = ["util"] }

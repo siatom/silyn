@@ -1,0 +1,74 @@
+# W7-01 acceptance gates: local HTTP API and SSE event stream.
+#
+# `cargo run -p xtask -- verify-acceptance` resolves every entry against the
+# real test source. Removing or renaming a test requires an integrator commit.
+
+[[gate]]
+id = "api.health"
+test = "crates/silyn-api/tests/http.rs::health_is_public_and_reports_version"
+required = true
+
+[[gate]]
+id = "api.agent_session_task_round_trip"
+test = "crates/silyn-api/tests/http.rs::agent_session_task_run_round_trip"
+required = true
+
+[[gate]]
+id = "api.run_create_and_get"
+test = "crates/silyn-api/tests/http.rs::run_can_be_fetched_by_id"
+required = true
+
+[[gate]]
+id = "api.events_sse"
+test = "crates/silyn-api/tests/http.rs::events_stream_replays_a_terminal_run_and_ends"
+required = true
+
+[[gate]]
+id = "api.cancel"
+test = "crates/silyn-api/tests/http.rs::cancel_unknown_is_404_and_known_writes_the_signal"
+required = true
+
+[[gate]]
+id = "api.memory_search"
+test = "crates/silyn-api/tests/http.rs::memory_search_is_agent_scoped"
+required = true
+
+[[gate]]
+id = "api.error_mapping"
+test = "crates/silyn-api/src/error.rs::mapping_covers_every_error_class"
+required = true
+
+[[gate]]
+id = "api.request_validation"
+test = "crates/silyn-api/tests/http.rs::unknown_ids_are_404_and_malformed_input_is_400"
+required = true
+
+[[gate]]
+id = "api.local_bind_only"
+test = "crates/silyn-api/tests/http.rs::non_loopback_bind_is_rejected_without_binding"
+required = true
+
+[[gate]]
+id = "api.token"
+test = "crates/silyn-api/tests/http.rs::token_middleware_protects_v1_only"
+required = true
+
+[[gate]]
+id = "api.evolution_candidates"
+test = "crates/silyn-api/tests/evolution.rs::candidates_can_be_submitted_listed_and_shown"
+required = true
+
+[[gate]]
+id = "api.policy_denied"
+test = "crates/silyn-api/tests/evolution.rs::cross_agent_evidence_is_policy_denied"
+required = true
+
+[[gate]]
+id = "api.evolution_gate"
+test = "crates/silyn-api/tests/evolution.rs::evaluation_and_promotion_follow_the_gate"
+required = true
+
+[[gate]]
+id = "api.token_comparison"
+test = "crates/silyn-api/src/auth.rs::token_comparison_accepts_only_equal_values"
+required = true
