@@ -30,6 +30,13 @@ pub struct RunState {
     pub pending: Option<PendingAction>,
     pub final_answer: Option<String>,
     pub loop_fingerprints: Vec<String>,
+    /// Ids of the memories rendered into the system prompt. Defaulted so
+    /// checkpoints written before W4 still parse.
+    #[serde(default)]
+    pub memory_refs: Vec<String>,
+    /// Number of retrieved memories dropped by the render caps.
+    #[serde(default)]
+    pub memory_truncated: u32,
 }
 
 impl Default for RunState {
@@ -43,6 +50,8 @@ impl Default for RunState {
             pending: None,
             final_answer: None,
             loop_fingerprints: Vec::new(),
+            memory_refs: Vec::new(),
+            memory_truncated: 0,
         }
     }
 }
@@ -80,5 +89,24 @@ mod tests {
     #[test]
     fn schema_version_is_pinned() {
         assert_eq!(RUN_STATE_SCHEMA_VERSION, 1);
+    }
+
+    #[test]
+    fn pre_w4_checkpoint_still_parses() {
+        // A checkpoint written before memory_refs/memory_truncated existed.
+        let json = r#"{
+            "step_seq": 2,
+            "messages": [],
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cost_usd": 0.0,
+            "pending": null,
+            "final_answer": null,
+            "loop_fingerprints": []
+        }"#;
+        let state: RunState = serde_json::from_str(json).expect("pre-W4 state parses");
+
+        assert!(state.memory_refs.is_empty());
+        assert_eq!(state.memory_truncated, 0);
     }
 }

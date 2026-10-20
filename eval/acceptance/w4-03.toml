@@ -1,0 +1,125 @@
+# W4-03 acceptance gates: memory-aware context, verifier wiring and experience
+# extraction.
+#
+# `cargo run -p xtask -- verify-acceptance` resolves every entry against the
+# real test source. Removing or renaming a test requires an integrator commit.
+
+[[gate]]
+id = "context.memory_injected_with_ids"
+test = "crates/silyn-app/src/runtime_service.rs::memory_injected_with_ids"
+required = true
+
+[[gate]]
+id = "context.memory_scope_isolation"
+test = "crates/silyn-app/src/runtime_service.rs::memory_scope_isolation"
+required = true
+
+[[gate]]
+id = "context.no_memory_unchanged"
+test = "crates/silyn-app/src/runtime_service.rs::no_memory_unchanged"
+required = true
+
+[[gate]]
+id = "context.prompt_cites_ids_and_untrusted"
+test = "crates/silyn-runtime/src/context.rs::memory_block_cites_ids_and_is_untrusted"
+required = true
+
+[[gate]]
+id = "context.prompt_blocks_injection"
+test = "crates/silyn-runtime/src/context.rs::newlines_in_memory_cannot_forge_prompt_structure"
+required = true
+
+[[gate]]
+id = "context.content_cap"
+test = "crates/silyn-runtime/src/context.rs::content_is_capped_deterministically"
+required = true
+
+[[gate]]
+id = "context.snippet_cap"
+test = "crates/silyn-runtime/src/context.rs::at_most_eight_snippets_are_rendered"
+required = true
+
+[[gate]]
+id = "context.tiny_budget_drops"
+test = "crates/silyn-runtime/src/context.rs::tiny_budget_drops_trailing_memories"
+required = true
+
+[[gate]]
+id = "context.budget_keeps_prefix"
+test = "crates/silyn-runtime/src/context.rs::budget_keeps_the_prefix_that_fits"
+required = true
+
+[[gate]]
+id = "context.no_memory_is_protocol"
+test = "crates/silyn-runtime/src/context.rs::no_memories_is_the_protocol_prompt"
+required = true
+
+[[gate]]
+id = "runtime.pre_w4_checkpoint_parses"
+test = "crates/silyn-runtime/src/state.rs::pre_w4_checkpoint_still_parses"
+required = true
+
+[[gate]]
+id = "learning.failed_run_creates_provisional"
+test = "crates/silyn-app/src/runtime_service.rs::failed_verification_creates_one_provisional"
+required = true
+
+[[gate]]
+id = "learning.unknown_creates_nothing"
+test = "crates/silyn-app/src/runtime_service.rs::unknown_creates_nothing"
+required = true
+
+[[gate]]
+id = "learning.cancelled_creates_nothing"
+test = "crates/silyn-app/src/runtime_service.rs::cancelled_creates_nothing"
+required = true
+
+[[gate]]
+id = "learning.cross_run_deduplicates"
+test = "crates/silyn-app/src/runtime_service.rs::failures_deduplicate"
+required = true
+
+[[gate]]
+id = "learning.unknown_has_no_lesson"
+test = "crates/silyn-app/src/learning.rs::unknown_has_no_lesson"
+required = true
+
+[[gate]]
+id = "learning.cancelled_has_no_lesson"
+test = "crates/silyn-app/src/learning.rs::cancelled_has_no_lesson"
+required = true
+
+[[gate]]
+id = "learning.success_and_failure_map"
+test = "crates/silyn-app/src/learning.rs::success_and_failure_map_to_results"
+required = true
+
+[[gate]]
+id = "learning.failure_codes_are_stable"
+test = "crates/silyn-app/src/learning.rs::failure_codes_are_stable"
+required = true
+
+[[gate]]
+id = "learning.provider_injection_offline"
+test = "crates/silyn-app/src/runtime_service.rs::provider_injection_uses_mock_without_network_or_key"
+required = true
+
+[[gate]]
+id = "cli.memory_add_and_search"
+test = "crates/silyn-cli/tests/memory.rs::memory_add_list_search_delete_round_trip"
+required = true
+
+[[gate]]
+id = "cli.experience_list_provisional"
+test = "crates/silyn-cli/tests/memory.rs::experience_list_shows_provisional_after_failed_run"
+required = true
+
+[[gate]]
+id = "cli.memory_delete_foreign"
+test = "crates/silyn-cli/tests/memory.rs::memory_delete_of_a_foreign_memory_exits_five"
+required = true
+
+[[gate]]
+id = "cli.memory_usage_errors"
+test = "crates/silyn-cli/tests/memory.rs::memory_usage_errors_exit_two"
+required = true

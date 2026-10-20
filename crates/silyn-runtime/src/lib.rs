@@ -4,6 +4,7 @@
 //! tool call is checked by the broker against the run's capability set.
 
 pub mod budget;
+pub mod context;
 pub mod control;
 pub mod detect;
 pub mod retry;
@@ -12,6 +13,10 @@ pub mod state;
 pub mod tools;
 
 pub use budget::{BudgetError, BudgetSpec, BudgetTracker};
+pub use context::{
+    ContextBuilder, MAX_MEMORY_CONTENT_CHARS, MAX_MEMORY_SNIPPETS, MemorySnippet, PROTOCOL_PROMPT,
+    RenderedContext,
+};
 pub use control::{RunControl, cancel_file_path};
 pub use detect::{LoopDetector, fingerprint_tool_call};
 pub use retry::RetryPolicy;

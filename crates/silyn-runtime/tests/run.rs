@@ -114,6 +114,8 @@ fn default_options() -> RunOptions {
         budget: silyn_runtime::BudgetSpec::default(),
         price: None,
         cancel_file: None,
+        memories: Vec::new(),
+        agent_id: None,
     }
 }
 

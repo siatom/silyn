@@ -19,10 +19,11 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::Duration;
 
-use clap::{CommandFactory, Parser, Subcommand};
+use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
 use silyn_app::{
-    AgentRecord, App, BudgetSpec, RunOptions, RunOutcome, RunRecord, RunRequest, SessionRecord,
-    TaskRecord, ToolCallRecord, ToolCallState,
+    AgentRecord, App, BudgetSpec, ExperienceRecord, MemoryHitRecord, MemoryScope, Provenance,
+    RunOptions, RunOutcome, RunRecord, RunRequest, SessionRecord, TaskRecord, ToolCallRecord,
+    ToolCallState,
 };
 use silyn_core::SilynError;
 use silyn_core::error::ErrorClass;
@@ -72,6 +73,16 @@ enum Command {
     Task {
         #[command(subcommand)]
         command: TaskCommand,
+    },
+    /// Manage agent-scoped memories.
+    Memory {
+        #[command(subcommand)]
+        command: MemoryCommand,
+    },
+    /// Inspect provisional experiences extracted from runs.
+    Experience {
+        #[command(subcommand)]
+        command: ExperienceCommand,
     },
     /// Inspect execution runs.
     Runs {
@@ -129,6 +140,9 @@ struct RunArgs {
     /// Capability granted to the run (repeatable). Defaults to none.
     #[arg(long = "capability", value_name = "NAME")]
     capabilities: Vec<String>,
+    /// Expected JSON object. Enables expected-answer verification.
+    #[arg(long, value_name = "JSON", value_parser = parse_expected_json)]
+    expect_json: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Subcommand)]
@@ -164,6 +178,104 @@ enum TaskCommand {
         #[arg(long, value_parser = parse_objective)]
         objective: String,
     },
+}
+
+#[derive(Debug, Subcommand)]
+enum MemoryCommand {
+    /// Store one memory for an agent.
+    Add {
+        /// Agent id (UUID).
+        #[arg(long, value_parser = parse_agent_id)]
+        agent: AgentId,
+        /// One-line summary used for retrieval and prompt rendering.
+        #[arg(long, value_parser = parse_memory_text)]
+        summary: String,
+        /// Full memory text.
+        #[arg(long, value_parser = parse_memory_text)]
+        content: String,
+        /// Retrieval scope. Defaults to `agent`.
+        #[arg(long, value_enum, default_value = "agent")]
+        scope: MemoryScopeArg,
+        /// Where the text came from. Defaults to `user_statement`.
+        #[arg(long, value_enum, default_value = "user_statement")]
+        provenance: ProvenanceArg,
+    },
+    /// List active memories of an agent, newest first.
+    List {
+        /// Agent id (UUID).
+        #[arg(long, value_parser = parse_agent_id)]
+        agent: AgentId,
+    },
+    /// Full-text search over one agent's memories.
+    Search {
+        /// Agent id (UUID).
+        #[arg(long, value_parser = parse_agent_id)]
+        agent: AgentId,
+        /// Query terms.
+        query: String,
+        /// Maximum number of hits.
+        #[arg(long, default_value_t = 8)]
+        limit: usize,
+    },
+    /// Soft-delete one memory (kept for audit, hidden from retrieval).
+    Delete {
+        /// Agent id (UUID).
+        #[arg(long, value_parser = parse_agent_id)]
+        agent: AgentId,
+        /// Memory id (UUID).
+        #[arg(value_parser = parse_memory_id)]
+        id: silyn_core::ids::MemoryId,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum ExperienceCommand {
+    /// List experiences of one agent.
+    List {
+        /// Agent id (UUID).
+        #[arg(long, value_parser = parse_agent_id)]
+        agent: AgentId,
+    },
+}
+
+/// CLI-facing memory scope names (`agent`, `session`).
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum MemoryScopeArg {
+    Agent,
+    Session,
+}
+
+impl From<MemoryScopeArg> for MemoryScope {
+    fn from(value: MemoryScopeArg) -> Self {
+        match value {
+            MemoryScopeArg::Agent => Self::Agent,
+            MemoryScopeArg::Session => Self::Session,
+        }
+    }
+}
+
+/// CLI-facing provenance names, matching the growth wire format.
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum ProvenanceArg {
+    #[value(name = "user_statement")]
+    UserStatement,
+    #[value(name = "external_evidence")]
+    ExternalEvidence,
+    #[value(name = "model_inference")]
+    ModelInference,
+    #[value(name = "tool_output")]
+    ToolOutput,
+}
+
+impl From<ProvenanceArg> for Provenance {
+    fn from(value: ProvenanceArg) -> Self {
+        match value {
+            ProvenanceArg::UserStatement => Self::UserStatement,
+            ProvenanceArg::ExternalEvidence => Self::ExternalEvidence,
+            ProvenanceArg::ModelInference => Self::ModelInference,
+            ProvenanceArg::ToolOutput => Self::ToolOutput,
+        }
+    }
 }
 
 #[derive(Debug, Subcommand)]
@@ -225,6 +337,25 @@ async fn dispatch(command: Command, json: bool) -> Result<ExitCode, SilynError> 
             TaskCommand::Create { session, objective } => {
                 task_create(session, &objective, json).await
             }
+        },
+        Command::Memory { command } => match command {
+            MemoryCommand::Add {
+                agent,
+                summary,
+                content,
+                scope,
+                provenance,
+            } => memory_add(agent, &summary, &content, scope, provenance, json).await,
+            MemoryCommand::List { agent } => memory_list(agent, json).await,
+            MemoryCommand::Search {
+                agent,
+                query,
+                limit,
+            } => memory_search(agent, &query, limit, json).await,
+            MemoryCommand::Delete { agent, id } => memory_delete(agent, id, json).await,
+        },
+        Command::Experience { command } => match command {
+            ExperienceCommand::List { agent } => experience_list(agent, json).await,
         },
         Command::Runs { command } => match command {
             RunsCommand::List => runs_list(json).await,
@@ -459,6 +590,133 @@ async fn task_create(session: SessionId, objective: &str, json: bool) -> Result<
     print_task(&record, json)
 }
 
+async fn memory_add(
+    agent: AgentId,
+    summary: &str,
+    content: &str,
+    scope: MemoryScopeArg,
+    provenance: ProvenanceArg,
+    json: bool,
+) -> Result<(), SilynError> {
+    let app = App::open(home_dir()).await?;
+    let record = app
+        .add_memory(agent, summary, content, scope.into(), provenance.into())
+        .await?;
+
+    if json {
+        return print_json(&serde_json::to_value(&record)?);
+    }
+    println!("{}", record.id);
+    Ok(())
+}
+
+async fn memory_list(agent: AgentId, json: bool) -> Result<(), SilynError> {
+    let app = App::open(home_dir()).await?;
+    let memories = app.list_memories(agent).await?;
+
+    if json {
+        return print_json(&serde_json::to_value(&memories)?);
+    }
+    print_memory_rows(&memories);
+    Ok(())
+}
+
+async fn memory_search(
+    agent: AgentId,
+    query: &str,
+    limit: usize,
+    json: bool,
+) -> Result<(), SilynError> {
+    let app = App::open(home_dir()).await?;
+    let memories = app.search_memories(agent, query, limit).await?;
+
+    if json {
+        return print_json(&serde_json::to_value(&memories)?);
+    }
+    print_memory_rows(&memories);
+    Ok(())
+}
+
+async fn memory_delete(
+    agent: AgentId,
+    id: silyn_core::ids::MemoryId,
+    json: bool,
+) -> Result<(), SilynError> {
+    let app = App::open(home_dir()).await?;
+    app.delete_memory(agent, id).await?;
+
+    if json {
+        return print_json(&serde_json::json!({
+            "memory_id": id,
+            "deleted": true,
+        }));
+    }
+    println!("deleted: {id}");
+    Ok(())
+}
+
+async fn experience_list(agent: AgentId, json: bool) -> Result<(), SilynError> {
+    let app = App::open(home_dir()).await?;
+    let experiences = app.list_experiences(agent).await?;
+
+    if json {
+        return print_json(&serde_json::to_value(&experiences)?);
+    }
+
+    let rows: Vec<Vec<String>> = experiences
+        .iter()
+        .map(|record| {
+            vec![
+                record.id.to_string(),
+                record.lesson.clone(),
+                evidence_name(record),
+                format!("{:.3}", record.confidence),
+                record
+                    .source_run_ids
+                    .iter()
+                    .map(std::string::ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join(","),
+                record.created_at.to_rfc3339(),
+            ]
+        })
+        .collect();
+    print_table(
+        &["ID", "LESSON", "EVIDENCE", "CONFIDENCE", "RUNS", "CREATED"],
+        &rows,
+    );
+    Ok(())
+}
+
+fn print_memory_rows(memories: &[MemoryHitRecord]) {
+    let rows: Vec<Vec<String>> = memories
+        .iter()
+        .map(|memory| {
+            vec![
+                memory.id.to_string(),
+                memory.summary.clone(),
+                provenance_name(memory.provenance),
+                format!("{:.3}", memory.confidence),
+            ]
+        })
+        .collect();
+    print_table(&["ID", "SUMMARY", "PROVENANCE", "CONFIDENCE"], &rows);
+}
+
+fn provenance_name(provenance: Provenance) -> String {
+    serde_json::to_value(provenance)
+        .ok()
+        .and_then(|value| value.as_str().map(str::to_owned))
+        .unwrap_or_else(|| "unknown".to_owned())
+}
+
+fn evidence_name(record: &ExperienceRecord) -> String {
+    serde_json::to_value(record.evidence_status)
+        .ok()
+        .and_then(|value| value.as_str().map(str::to_owned))
+        .unwrap_or_else(|| "unknown".to_owned())
+}
+
 async fn runs_list(json: bool) -> Result<(), SilynError> {
     let app = App::open(home_dir()).await?;
     let runs = app.list_runs().await?;
@@ -599,6 +857,8 @@ impl RunArgs {
             price: None,
             // Filled once the run id exists, so another process can cancel it.
             cancel_file: None,
+            memories: Vec::new(),
+            agent_id: None,
         };
 
         let request = RunRequest {
@@ -608,6 +868,7 @@ impl RunArgs {
             resume: self.resume,
             options,
             offline: self.offline,
+            expected_json: self.expect_json,
         };
         request.validate()?;
         Ok(request)
@@ -830,4 +1091,27 @@ fn parse_run_id(value: &str) -> Result<RunId, String> {
     value
         .parse()
         .map_err(|error| format!("invalid run id `{value}`: {error}"))
+}
+
+fn parse_memory_id(value: &str) -> Result<silyn_core::ids::MemoryId, String> {
+    value
+        .parse()
+        .map_err(|error| format!("invalid memory id `{value}`: {error}"))
+}
+
+fn parse_memory_text(value: &str) -> Result<String, String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return Err("memory text must not be empty".to_owned());
+    }
+    Ok(trimmed.to_owned())
+}
+
+fn parse_expected_json(value: &str) -> Result<serde_json::Value, String> {
+    let parsed: serde_json::Value = serde_json::from_str(value)
+        .map_err(|error| format!("invalid --expect-json value: {error}"))?;
+    if !parsed.is_object() {
+        return Err("--expect-json must be a JSON object".to_owned());
+    }
+    Ok(parsed)
 }
