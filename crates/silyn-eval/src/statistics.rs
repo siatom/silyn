@@ -163,6 +163,12 @@ pub struct ArmStatistics {
     pub evolution: bool,
     pub cost_usd_per_call: f64,
     pub budget: crate::backend::TaskBudget,
+    /// Effective context of this arm, when it reads one (W6 B and C).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context: Option<crate::context::ArmContextRecord>,
+    /// True when the provider had a price table, so `cost_usd` is metered.
+    #[serde(default)]
+    pub price_configured: bool,
     pub successes: u32,
     pub total: u32,
     pub success_rate_pp: f64,
@@ -185,6 +191,8 @@ impl ArmStatistics {
             evolution: config.evolution,
             cost_usd_per_call: config.cost_usd_per_call,
             budget: config.budget,
+            context: config.context.clone(),
+            price_configured: config.price_configured,
             successes: outcome.successes(),
             total: outcome.total(),
             success_rate_pp: outcome.success_rate_pp(),

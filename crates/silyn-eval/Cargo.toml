@@ -20,10 +20,12 @@ chrono.workspace = true
 clap.workspace = true
 csv = "1"
 silyn-core = { path = "../silyn-core" }
+silyn-llm = { path = "../silyn-llm" }
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
 tempfile.workspace = true
+tokio = { workspace = true, features = ["time"] }
 toml.workspace = true
 uuid.workspace = true
 

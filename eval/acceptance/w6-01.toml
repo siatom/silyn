@@ -1,0 +1,59 @@
+# W6-01 acceptance gates: the real model solver and the declared A/B/C contexts.
+#
+# `cargo run -p xtask -- verify-acceptance` resolves every entry against the real
+# test source. Removing or renaming a test requires an integrator commit.
+
+[[gate]]
+id = "w6.context_prompts_differ_by_arm"
+test = "crates/silyn-eval/tests/model_solver.rs::context_prompts_differ_by_arm"
+required = true
+
+[[gate]]
+id = "w6.solver_parses_submission"
+test = "crates/silyn-eval/tests/model_solver.rs::solver_parses_submission"
+required = true
+
+[[gate]]
+id = "w6.solver_rejects_non_json"
+test = "crates/silyn-eval/tests/model_solver.rs::solver_rejects_non_json"
+required = true
+
+[[gate]]
+id = "w6.solver_records_model_id"
+test = "crates/silyn-eval/tests/model_solver.rs::solver_records_model_id"
+required = true
+
+[[gate]]
+id = "w6.no_api_key_in_errors"
+test = "crates/silyn-eval/tests/model_solver.rs::no_api_key_in_errors"
+required = true
+
+[[gate]]
+id = "w6.equal_budget_preserved"
+test = "crates/silyn-eval/tests/model_solver.rs::equal_budget_preserved"
+required = true
+
+[[gate]]
+id = "w6.context_file_validation"
+test = "crates/silyn-eval/tests/model_solver.rs::context_file_validation"
+required = true
+
+[[gate]]
+id = "w6.per_arm_task_order"
+test = "crates/silyn-eval/tests/model_solver.rs::per_arm_task_order"
+required = true
+
+[[gate]]
+id = "w6.provider_error_is_a_task_failure"
+test = "crates/silyn-eval/tests/model_solver.rs::provider_error_is_a_task_failure_and_cost_follows_price"
+required = true
+
+[[gate]]
+id = "w6.cost_from_price"
+test = "crates/silyn-eval/tests/model_solver.rs::provider_error_is_a_task_failure_and_cost_follows_price"
+required = true
+
+[[gate]]
+id = "w6.cli_model_requires_in_process"
+test = "crates/silyn-eval/tests/model_solver.rs::cli_model_run_requires_in_process_and_sealed_approval"
+required = true
