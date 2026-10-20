@@ -1,0 +1,39 @@
+# W4-01 acceptance gates: memory store, lifecycle, FTS5 retrieval and purge.
+#
+# `cargo run -p xtask -- verify-acceptance` resolves every entry against the
+# real test source. Removing or renaming a test requires an integrator commit.
+
+[[gate]]
+id = "memory.cross_agent_isolation"
+test = "crates/silyn-growth/tests/memory.rs::cross_agent_isolation"
+required = true
+
+[[gate]]
+id = "memory.conflict_does_not_overwrite"
+test = "crates/silyn-growth/tests/memory.rs::conflict_does_not_overwrite"
+required = true
+
+[[gate]]
+id = "memory.expiry_filters_retrieval"
+test = "crates/silyn-growth/tests/memory.rs::expiry_filters_retrieval"
+required = true
+
+[[gate]]
+id = "memory.fts_search_returns_ranked_hits"
+test = "crates/silyn-growth/tests/memory.rs::fts_search_returns_ranked_hits"
+required = true
+
+[[gate]]
+id = "memory.supersede_preserves_history"
+test = "crates/silyn-growth/tests/memory.rs::supersede_preserves_history"
+required = true
+
+[[gate]]
+id = "memory.purge_removes_blob_and_index"
+test = "crates/silyn-growth/tests/memory.rs::purge_removes_blob_and_index"
+required = true
+
+[[gate]]
+id = "memory.blob_deduplicates_content"
+test = "crates/silyn-growth/tests/memory.rs::blob_deduplicates_content"
+required = true
