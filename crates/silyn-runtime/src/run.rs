@@ -7,7 +7,8 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Duration;
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::time::{Duration, Instant};
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -27,6 +28,7 @@ use silyn_storage::journal::Journal;
 use silyn_storage::ledger::{ToolCallRecord, ToolCallState, ToolLedger};
 use silyn_storage::models::{RunRecord, StepRecord, TaskRecord};
 use silyn_storage::repo::{RunRepository, StepRepository, TaskRepository};
+use tracing::Span;
 
 use crate::budget::{BudgetError, BudgetSpec, BudgetTracker};
 use crate::context::{ContextBuilder, MemorySnippet};
@@ -34,6 +36,7 @@ use crate::control::RunControl;
 use crate::detect::{LoopDetector, fingerprint_tool_call};
 use crate::retry::RetryPolicy;
 use crate::state::{PendingAction, RUN_STATE_SCHEMA_VERSION, RunState};
+use crate::telemetry::{self, Usage};
 use crate::tools::{TOOL_DATA_PROFILE, TOOL_FS_LIST, TOOL_FS_READ};
 
 /// Options for one execution attempt.
@@ -235,6 +238,15 @@ impl Runtime {
             _ => {}
         }
 
+        let run_span = telemetry::run_span(
+            &run_id.to_string(),
+            &run.task_id.to_string(),
+            &run.policy_version.to_string(),
+            &run.model_id,
+        );
+        run_span.record(telemetry::FIELD_STATUS, run_status_label(run.status));
+        let started = Instant::now();
+
         let task = TaskRepository::new(self.storage.pool())
             .get(run.task_id)
             .await?
@@ -280,6 +292,7 @@ impl Runtime {
             tracker,
             detector,
             retry: RetryPolicy::default(),
+            run_span: run_span.clone(),
         };
 
         if run.status == RunStatus::Created {
@@ -308,7 +321,22 @@ impl Runtime {
             session.checkpoint().await?;
         }
 
-        session.run().await
+        let result = session.run().await;
+        match &result {
+            Ok(outcome) => telemetry::record_run(
+                &run_span,
+                run_status_label(outcome.status),
+                outcome.steps,
+                Usage {
+                    input_tokens: outcome.input_tokens,
+                    output_tokens: outcome.output_tokens,
+                    cost_usd: Some(outcome.cost_usd),
+                },
+                started.elapsed(),
+            ),
+            Err(_) => telemetry::record_run_error(&run_span, started.elapsed()),
+        }
+        result
     }
 
     async fn append_event(&self, run_id: RunId, event: &RunEvent) -> Result<(), SilynError> {
@@ -387,7 +415,10 @@ enum ModelTurn {
 enum ToolTurn {
     Completed(ToolResult),
     Cancelled,
-    Failed(String),
+    Failed {
+        message: String,
+        error_class: Option<&'static str>,
+    },
     Indeterminate(String),
 }
 
@@ -402,6 +433,7 @@ struct RunSession<'a> {
     tracker: BudgetTracker,
     detector: LoopDetector,
     retry: RetryPolicy,
+    run_span: Span,
 }
 
 impl RunSession<'_> {
@@ -466,7 +498,17 @@ impl RunSession<'_> {
         // before charging the next step, otherwise a crash during the last
         // allowed step could never be resumed.
         if let Some(pending) = self.state.pending.clone() {
-            return self.recover_pending(pending).await;
+            let span = telemetry::step_span(
+                &self.run_span,
+                &self.run_id.to_string(),
+                Some(&pending.step_id.to_string()),
+                pending.step_seq,
+                telemetry::KIND_TOOL,
+            );
+            let started = Instant::now();
+            let result = self.recover_pending(pending, &span).await;
+            telemetry::record_step(&span, step_status(&result), started.elapsed());
+            return result;
         }
 
         let next_step = self.state.step_seq.saturating_add(1);
@@ -479,11 +521,21 @@ impl RunSession<'_> {
         }
 
         self.state.step_seq = next_step;
-        self.model_step().await
+        let span = telemetry::step_span(
+            &self.run_span,
+            &self.run_id.to_string(),
+            None,
+            next_step,
+            telemetry::KIND_MODEL,
+        );
+        let started = Instant::now();
+        let result = self.model_step(&span).await;
+        telemetry::record_step(&span, step_status(&result), started.elapsed());
+        result
     }
 
-    async fn model_step(&mut self) -> Result<StepResult, SilynError> {
-        let first = match self.request_model().await? {
+    async fn model_step(&mut self, step_span: &Span) -> Result<StepResult, SilynError> {
+        let first = match self.request_model(step_span).await? {
             ModelTurn::Cancelled => {
                 return self
                     .finish_cancelled("cancelled during the model call")
@@ -514,7 +566,7 @@ impl RunSession<'_> {
                 });
                 self.checkpoint().await?;
 
-                let second = match self.request_model().await? {
+                let second = match self.request_model(step_span).await? {
                     ModelTurn::Cancelled => {
                         return self
                             .finish_cancelled("cancelled during the repair turn")
@@ -552,11 +604,13 @@ impl RunSession<'_> {
 
         match action {
             ParsedAction::Final(answer) => self.finish_verified(answer).await,
-            ParsedAction::Tool { tool, arguments } => self.start_tool_step(tool, arguments).await,
+            ParsedAction::Tool { tool, arguments } => {
+                self.start_tool_step(tool, arguments, step_span).await
+            }
         }
     }
 
-    async fn request_model(&self) -> Result<ModelTurn, SilynError> {
+    async fn request_model(&self, step_span: &Span) -> Result<ModelTurn, SilynError> {
         let request = ModelRequest {
             model: self.options.model.clone(),
             messages: self.state.messages.clone(),
@@ -566,11 +620,16 @@ impl RunSession<'_> {
         let provider = Arc::clone(&self.runtime.provider);
         let retry = self.retry;
         let timeout = self.options.budget.step_timeout;
+        let span = telemetry::model_span(step_span, &self.run_id.to_string(), &self.options.model);
+        let started = Instant::now();
+        let attempts = Arc::new(AtomicU32::new(0));
 
         let future = retry.retry(|| {
             let provider = Arc::clone(&provider);
             let request = request.clone();
+            let attempts = Arc::clone(&attempts);
             async move {
+                attempts.fetch_add(1, Ordering::SeqCst);
                 match tokio::time::timeout(timeout, provider.complete(request)).await {
                     Ok(result) => result,
                     Err(_) => Err(SilynError::Transient(
@@ -580,7 +639,7 @@ impl RunSession<'_> {
             }
         });
 
-        tokio::select! {
+        let turn = tokio::select! {
             biased;
             () = self.control.cancelled() => Ok(ModelTurn::Cancelled),
             result = future => match result {
@@ -590,7 +649,41 @@ impl RunSession<'_> {
                 }
                 Err(error) => Ok(ModelTurn::Failed(format!("model error: {error}"))),
             },
+        };
+
+        let retry_count = attempts.load(Ordering::SeqCst).saturating_sub(1);
+        match &turn {
+            Ok(ModelTurn::Response(response)) => telemetry::record_model(
+                &span,
+                telemetry::STATUS_COMPLETED,
+                Some(&response.model),
+                Usage {
+                    input_tokens: response.input_tokens,
+                    output_tokens: response.output_tokens,
+                    cost_usd: request_cost(self.options.price, response),
+                },
+                retry_count,
+                started.elapsed(),
+            ),
+            Ok(ModelTurn::Cancelled) => telemetry::record_model(
+                &span,
+                telemetry::STATUS_CANCELLED,
+                None,
+                Usage::default(),
+                retry_count,
+                started.elapsed(),
+            ),
+            Ok(ModelTurn::Failed(_)) | Err(_) => telemetry::record_model(
+                &span,
+                telemetry::STATUS_FAILED,
+                None,
+                Usage::default(),
+                retry_count,
+                started.elapsed(),
+            ),
         }
+
+        turn
     }
 
     fn apply_response(&mut self, response: &ModelResponse) -> Option<BudgetError> {
@@ -634,15 +727,34 @@ impl RunSession<'_> {
             json,
             RUN_STATE_SCHEMA_VERSION,
         );
-        CheckpointStore::new(self.runtime.storage.pool())
+        let checksum_prefix: String = record.checksum.chars().take(12).collect();
+        let span = telemetry::checkpoint_span(
+            &self.run_span,
+            &self.run_id.to_string(),
+            None,
+            record.schema_version,
+            &checksum_prefix,
+            telemetry::DIRECTION_WRITE,
+        );
+        let result = CheckpointStore::new(self.runtime.storage.pool())
             .insert(&record)
-            .await
+            .await;
+        telemetry::record_checkpoint(
+            &span,
+            if result.is_ok() {
+                telemetry::STATUS_COMPLETED
+            } else {
+                telemetry::STATUS_FAILED
+            },
+        );
+        result
     }
 
     async fn start_tool_step(
         &mut self,
         tool: String,
         arguments: Value,
+        step_span: &Span,
     ) -> Result<StepResult, SilynError> {
         let call = ToolCall {
             call_id: format!("{}:{}", self.run_id, self.state.step_seq),
@@ -669,10 +781,14 @@ impl RunSession<'_> {
         // The pending action must be durable before the ledger starts, so a
         // crash between the two can be resolved instead of replayed blindly.
         self.checkpoint().await?;
-        self.execute_pending(pending).await
+        self.execute_pending(pending, step_span).await
     }
 
-    async fn recover_pending(&mut self, pending: PendingAction) -> Result<StepResult, SilynError> {
+    async fn recover_pending(
+        &mut self,
+        pending: PendingAction,
+        step_span: &Span,
+    ) -> Result<StepResult, SilynError> {
         let ledger = ToolLedger::new(self.runtime.storage.pool());
         let record = ledger
             .get(self.run_id, pending.step_id, &pending.call.call_id)
@@ -680,36 +796,56 @@ impl RunSession<'_> {
 
         match record {
             Some(record) if record.state == ToolCallState::Succeeded => {
+                let span = self.tool_span(step_span, &pending);
+                let started = Instant::now();
                 let content = record.result_ref.unwrap_or_default();
                 self.complete_tool_success(&pending, &content).await?;
+                telemetry::record_tool(&span, telemetry::STATE_SUCCEEDED, None, started.elapsed());
                 Ok(StepResult::Continue)
             }
             Some(record) if record.state == ToolCallState::Failed => {
+                let span = self.tool_span(step_span, &pending);
+                let started = Instant::now();
                 let message = record
                     .result_ref
                     .unwrap_or_else(|| "tool call failed".to_owned());
                 self.complete_tool_failure(&pending, &message).await?;
+                telemetry::record_tool(&span, telemetry::STATE_FAILED, None, started.elapsed());
                 Ok(StepResult::Continue)
             }
             Some(record) => {
+                let span = self.tool_span(step_span, &pending);
+                let started = Instant::now();
                 if record.state == ToolCallState::Started {
                     ledger
                         .mark_indeterminate(self.run_id, pending.step_id, &pending.call.call_id)
                         .await?;
                 }
                 self.checkpoint().await?;
-                self.finish_failed(format!(
-                    "tool call {} is indeterminate; refusing to replay",
-                    pending.call.call_id
-                ))
-                .await
-                .map(StepResult::Finished)
+                let result = self
+                    .finish_failed(format!(
+                        "tool call {} is indeterminate; refusing to replay",
+                        pending.call.call_id
+                    ))
+                    .await
+                    .map(StepResult::Finished);
+                telemetry::record_tool(
+                    &span,
+                    telemetry::STATE_INDETERMINATE,
+                    Some("indeterminate"),
+                    started.elapsed(),
+                );
+                result
             }
-            None => self.execute_pending(pending).await,
+            None => self.execute_pending(pending, step_span).await,
         }
     }
 
-    async fn execute_pending(&mut self, pending: PendingAction) -> Result<StepResult, SilynError> {
+    async fn execute_pending(
+        &mut self,
+        pending: PendingAction,
+        step_span: &Span,
+    ) -> Result<StepResult, SilynError> {
         if self.control.is_cancelled() {
             // Nothing has been started, so the ledger stays untouched.
             return self
@@ -717,6 +853,8 @@ impl RunSession<'_> {
                 .await
                 .map(StepResult::Finished);
         }
+        let span = self.tool_span(step_span, &pending);
+        let started = Instant::now();
         let ledger = ToolLedger::new(self.runtime.storage.pool());
         let record = ToolCallRecord {
             run_id: self.run_id,
@@ -765,17 +903,24 @@ impl RunSession<'_> {
             biased;
             () = self.control.cancelled() => ToolTurn::Cancelled,
             result = future => match result {
-                Ok(result) if result.is_error => ToolTurn::Failed(result.content),
+                Ok(result) if result.is_error => ToolTurn::Failed {
+                    message: result.content,
+                    error_class: None,
+                },
                 Ok(result) => ToolTurn::Completed(result),
                 Err(SilynError::Indeterminate(message)) => ToolTurn::Indeterminate(message),
-                Err(SilynError::Transient(message)) if read_only => {
-                    ToolTurn::Failed(format!("tool `{}` failed: {message}", call.tool))
-                }
+                Err(SilynError::Transient(message)) if read_only => ToolTurn::Failed {
+                    message: format!("tool `{}` failed: {message}", call.tool),
+                    error_class: Some("transient"),
+                },
                 Err(SilynError::Transient(message)) => ToolTurn::Indeterminate(format!(
                     "tool `{}` may have run: {message}",
                     call.tool
                 )),
-                Err(error) => ToolTurn::Failed(format!("tool `{}` failed: {error}", call.tool)),
+                Err(error) => ToolTurn::Failed {
+                    message: format!("tool `{}` failed: {error}", call.tool),
+                    error_class: Some(telemetry::error_class(&error)),
+                },
             },
         };
 
@@ -783,10 +928,20 @@ impl RunSession<'_> {
             ToolTurn::Completed(result) => {
                 self.complete_tool_success(&pending, &result.content)
                     .await?;
+                telemetry::record_tool(&span, telemetry::STATE_SUCCEEDED, None, started.elapsed());
                 Ok(StepResult::Continue)
             }
-            ToolTurn::Failed(message) => {
+            ToolTurn::Failed {
+                message,
+                error_class,
+            } => {
                 self.complete_tool_failure(&pending, &message).await?;
+                telemetry::record_tool(
+                    &span,
+                    telemetry::STATE_FAILED,
+                    error_class,
+                    started.elapsed(),
+                );
                 Ok(StepResult::Continue)
             }
             ToolTurn::Cancelled => {
@@ -794,12 +949,20 @@ impl RunSession<'_> {
                     .mark_indeterminate(self.run_id, pending.step_id, &pending.call.call_id)
                     .await?;
                 self.insert_step(&pending, None).await?;
-                self.finish_cancelled(&format!(
-                    "cancelled while executing tool call {}",
-                    pending.call.call_id
-                ))
-                .await
-                .map(StepResult::Finished)
+                let result = self
+                    .finish_cancelled(&format!(
+                        "cancelled while executing tool call {}",
+                        pending.call.call_id
+                    ))
+                    .await
+                    .map(StepResult::Finished);
+                telemetry::record_tool(
+                    &span,
+                    telemetry::STATE_INDETERMINATE,
+                    None,
+                    started.elapsed(),
+                );
+                result
             }
             ToolTurn::Indeterminate(message) => {
                 ledger
@@ -807,14 +970,33 @@ impl RunSession<'_> {
                     .await?;
                 self.insert_step(&pending, None).await?;
                 self.checkpoint().await?;
-                self.finish_failed(format!(
-                    "tool call {} is indeterminate: {message}",
-                    pending.call.call_id
-                ))
-                .await
-                .map(StepResult::Finished)
+                let result = self
+                    .finish_failed(format!(
+                        "tool call {} is indeterminate: {message}",
+                        pending.call.call_id
+                    ))
+                    .await
+                    .map(StepResult::Finished);
+                telemetry::record_tool(
+                    &span,
+                    telemetry::STATE_INDETERMINATE,
+                    Some("indeterminate"),
+                    started.elapsed(),
+                );
+                result
             }
         }
+    }
+
+    fn tool_span(&self, step_span: &Span, pending: &PendingAction) -> Span {
+        telemetry::tool_span(
+            step_span,
+            &self.run_id.to_string(),
+            Some(&pending.step_id.to_string()),
+            &pending.call.tool,
+            capability_for(&self.options.capabilities, &pending.call.tool),
+            &pending.call.call_id,
+        )
     }
 
     async fn complete_tool_success(
@@ -930,6 +1112,8 @@ impl RunSession<'_> {
                 .filter_map(|step| step.result_ref),
         );
 
+        let verify_span = telemetry::verify_span(&self.run_span, &self.run_id.to_string());
+        let started = Instant::now();
         let evidence = match self
             .runtime
             .verifier
@@ -940,8 +1124,22 @@ impl RunSession<'_> {
             })
             .await
         {
-            Ok(evidence) => evidence,
+            Ok(evidence) => {
+                telemetry::record_verify(
+                    &verify_span,
+                    outcome_label(evidence.outcome),
+                    evidence.evidence_refs.len(),
+                    started.elapsed(),
+                );
+                evidence
+            }
             Err(error) => {
+                telemetry::record_verify(
+                    &verify_span,
+                    telemetry::OUTCOME_UNKNOWN,
+                    0,
+                    started.elapsed(),
+                );
                 return self
                     .finish_failed(format!("outcome verifier failed: {error}"))
                     .await
@@ -1123,6 +1321,36 @@ fn tool_output(tool: &str, call_id: &str, content: &str) -> String {
 
 fn is_read_only(tool: &str) -> bool {
     matches!(tool, TOOL_FS_LIST | TOOL_FS_READ | TOOL_DATA_PROFILE)
+}
+
+fn step_status(result: &Result<StepResult, SilynError>) -> &'static str {
+    match result {
+        Ok(StepResult::Continue) => telemetry::STATUS_COMPLETED,
+        Ok(StepResult::Finished(outcome)) => run_status_label(outcome.status),
+        Err(_) => telemetry::STATUS_FAILED,
+    }
+}
+
+fn outcome_label(outcome: VerifiedOutcome) -> &'static str {
+    match outcome {
+        VerifiedOutcome::Success => telemetry::OUTCOME_SUCCESS,
+        VerifiedOutcome::Failed => telemetry::OUTCOME_FAILED,
+        VerifiedOutcome::Unknown => telemetry::OUTCOME_UNKNOWN,
+    }
+}
+
+fn capability_for<'a>(capabilities: &'a [String], tool: &'a str) -> Option<&'a str> {
+    capabilities
+        .iter()
+        .any(|capability| capability == tool)
+        .then_some(tool)
+}
+
+fn request_cost(price: Option<Price>, response: &ModelResponse) -> Option<f64> {
+    price.map(|price| {
+        (response.input_tokens as f64 / 1_000_000.0) * price.input_per_million
+            + (response.output_tokens as f64 / 1_000_000.0) * price.output_per_million
+    })
 }
 
 fn run_status_label(status: RunStatus) -> &'static str {
