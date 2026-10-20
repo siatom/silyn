@@ -84,6 +84,9 @@ CREATE TABLE policy_versions (
 CREATE TRIGGER policy_versions_no_update
 BEFORE UPDATE ON policy_versions
 BEGIN SELECT RAISE(ABORT, 'policy_versions are immutable'); END;
+CREATE TRIGGER policy_versions_no_delete
+BEFORE DELETE ON policy_versions
+BEGIN SELECT RAISE(ABORT, 'policy_versions are immutable'); END;
 
 CREATE TABLE evolution_candidates (
     id TEXT PRIMARY KEY,
