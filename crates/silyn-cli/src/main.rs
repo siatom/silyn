@@ -16,7 +16,7 @@
 use std::collections::HashSet;
 use std::env;
 use std::io::Read as _;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::Duration;
 
@@ -32,7 +32,7 @@ use silyn_core::contracts::PromotionDecision;
 use silyn_core::error::ErrorClass;
 use silyn_core::event::{RunEvent, VerifiedOutcome};
 use silyn_core::ids::{AgentId, CandidateId, PromotionId, RunId, SessionId, TaskId};
-use silyn_core::state::{CandidateState, RunStatus};
+use silyn_core::state::{CandidateState, LifecycleState, RunStatus};
 
 /// Exit code for a policy denial and for a cancelled run.
 const EXIT_CANCELLED: u8 = 3;
@@ -96,6 +96,11 @@ enum Command {
     Runs {
         #[command(subcommand)]
         command: RunsCommand,
+    },
+    /// Render a run or an evaluation experiment as JSON or Markdown.
+    Report {
+        #[command(subcommand)]
+        command: ReportCommand,
     },
     /// Execute a task, or resume an existing run, through the runtime loop.
     Run(RunArgs),
@@ -397,6 +402,61 @@ enum RunsCommand {
     },
 }
 
+/// `silyn report`: read-only rendering of a run or an evaluation experiment.
+#[derive(Debug, Subcommand)]
+enum ReportCommand {
+    /// Bundle one run: record, journal events, tool ledger, outcome and usage.
+    Run(ReportRunArgs),
+    /// Render an `EvalReport` and its statistics companion.
+    Experiment(ReportExperimentArgs),
+}
+
+/// Payload encoding of a report. `--json` always forces JSON.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum ReportFormat {
+    Json,
+    Markdown,
+}
+
+impl ReportFormat {
+    /// Wire name used in the `--out` metadata document.
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Json => "json",
+            Self::Markdown => "markdown",
+        }
+    }
+}
+
+#[derive(Debug, clap::Args)]
+struct ReportRunArgs {
+    /// Run id (UUID).
+    #[arg(value_parser = parse_run_id)]
+    id: RunId,
+    /// Payload encoding. `--json` forces `json`.
+    #[arg(long, value_enum, default_value = "json")]
+    format: ReportFormat,
+    /// Write the payload to this file instead of stdout.
+    #[arg(long, value_name = "PATH")]
+    out: Option<PathBuf>,
+}
+
+#[derive(Debug, clap::Args)]
+struct ReportExperimentArgs {
+    /// `EvalReport` JSON document.
+    #[arg(value_name = "REPORT")]
+    report: PathBuf,
+    /// Statistics companion; defaults to `<report>.stats.json` when it exists.
+    #[arg(long, value_name = "FILE")]
+    stats: Option<PathBuf>,
+    /// Payload encoding. `--json` forces `json`.
+    #[arg(long, value_enum, default_value = "json")]
+    format: ReportFormat,
+    /// Write the payload to this file instead of stdout.
+    #[arg(long, value_name = "PATH")]
+    out: Option<PathBuf>,
+}
+
 #[tokio::main]
 async fn main() -> ExitCode {
     // Local development only. CI and production read real environment variables.
@@ -456,6 +516,7 @@ async fn dispatch(command: Command, json: bool) -> Result<ExitCode, SilynError> 
             RunsCommand::Tools { id } => runs_tools(id, json).await,
             RunsCommand::Cancel { id } => runs_cancel(id, json).await,
         },
+        Command::Report { command } => report_command(command, json).await,
         // `run` maps the run outcome to a stable exit code, so it owns the code.
         Command::Run(args) => return run(args, json).await,
         Command::Doctor => doctor(json),
@@ -1279,6 +1340,657 @@ fn print_outcome(outcome: &RunOutcome) {
     if let Some(reason) = &outcome.reason {
         println!("reason: {reason}");
     }
+}
+
+/// Dispatches `silyn report`.
+async fn report_command(command: ReportCommand, json: bool) -> Result<(), SilynError> {
+    match command {
+        ReportCommand::Run(args) => report_run(args, json).await,
+        ReportCommand::Experiment(args) => report_experiment(args, json).await,
+    }
+}
+
+/// Renders one run as a self-contained bundle.
+///
+/// The run record, the journal and the tool ledger are read through `silyn-app`;
+/// the outcome is derived from the last `run_verified` event and the failure
+/// reason from the last `run_failed` event, never guessed from the status.
+///
+/// Memory references are intentionally absent: `RunOutcome::memory_refs` is not
+/// persisted, so the app cannot expose them for a finished run. Reporting an
+/// empty list would claim that no memory was injected.
+async fn report_run(args: ReportRunArgs, json: bool) -> Result<(), SilynError> {
+    let app = App::open(home_dir()).await?;
+    let run = app.get_run(args.id).await?;
+    let events = app.list_run_events(args.id).await?;
+    let tools = app.list_tool_calls(args.id).await?;
+
+    let bundle = run_report_bundle(&run, &events, &tools);
+    let markdown = render_run_markdown(&bundle);
+    emit_payload(&bundle, &markdown, args.format, json, args.out.as_deref())
+}
+
+/// Builds the run report document. Markdown is rendered from this value only.
+fn run_report_bundle(
+    run: &RunRecord,
+    events: &[silyn_core::event::EventEnvelope],
+    tools: &[ToolCallRecord],
+) -> serde_json::Value {
+    let mut event_types = Vec::with_capacity(events.len());
+    let mut outcome = None;
+    let mut failure = None;
+    for envelope in events {
+        event_types.push(event_name(&envelope.event));
+        match &envelope.event {
+            RunEvent::RunVerified { outcome: verified } => outcome = Some(*verified),
+            RunEvent::RunFailed { reason } => failure = Some(reason.clone()),
+            _ => {}
+        }
+    }
+
+    let mut started = 0_usize;
+    let mut succeeded = 0_usize;
+    let mut failed = 0_usize;
+    let mut indeterminate = 0_usize;
+    for call in tools {
+        match call.state {
+            ToolCallState::Started => started += 1,
+            ToolCallState::Succeeded => succeeded += 1,
+            ToolCallState::Failed => failed += 1,
+            ToolCallState::Indeterminate => indeterminate += 1,
+        }
+    }
+
+    serde_json::json!({
+        "schema_version": 1,
+        "kind": "run_report",
+        "generated_at": chrono::Utc::now(),
+        "run": run,
+        "status": status_name(run.status),
+        "terminal": run.status.is_terminal(),
+        "outcome": outcome.map(outcome_name),
+        "failure": failure.map(|reason| serde_json::json!({ "reason": reason })),
+        "event_count": events.len(),
+        "event_types": event_types,
+        "events": events,
+        "tool_call_count": tools.len(),
+        "tool_summary": {
+            "started": started,
+            "succeeded": succeeded,
+            "failed": failed,
+            "indeterminate": indeterminate,
+        },
+        "tool_calls": tools,
+        "usage": {
+            "input_tokens": run.input_tokens,
+            "output_tokens": run.output_tokens,
+            "cost_usd": run.cost_usd,
+        },
+    })
+}
+
+/// Renders the run report as Markdown from the JSON bundle.
+///
+/// Every number in the output is read back from the bundle, so the two
+/// encodings cannot drift apart.
+fn render_run_markdown(report: &serde_json::Value) -> String {
+    let status = scalar_at(report, "/status");
+    let terminal = scalar_at(report, "/terminal");
+    let outcome = scalar_at(report, "/outcome");
+    let failure = scalar_at(report, "/failure/reason");
+    let model = scalar_at(report, "/run/model_id");
+    let task = scalar_at(report, "/run/task_id");
+    let policy = scalar_at(report, "/run/policy_version");
+    let snapshot = scalar_at(report, "/run/memory_snapshot_version");
+    let created = scalar_at(report, "/run/created_at");
+    let started = scalar_at(report, "/run/started_at");
+    let finished = scalar_at(report, "/run/finished_at");
+
+    let mut text = String::new();
+    let run_id = scalar_at(report, "/run/id");
+    text.push_str(&format!("# Run report: {run_id}\n\n"));
+    text.push_str("## Summary\n\n");
+    text.push_str(&format!("- status: {status}\n"));
+    text.push_str(&format!("- terminal: {terminal}\n"));
+    text.push_str(&format!("- outcome: {outcome}\n"));
+    text.push_str(&format!("- failure: {failure}\n"));
+    text.push_str(&format!("- model: {model}\n"));
+    text.push_str(&format!("- task: {task}\n"));
+    text.push_str(&format!("- policy_version: {policy}\n"));
+    text.push_str(&format!("- memory_snapshot_version: {snapshot}\n"));
+    text.push_str(&format!("- created_at: {created}\n"));
+    text.push_str(&format!("- started_at: {started}\n"));
+    text.push_str(&format!("- finished_at: {finished}\n\n"));
+
+    let input_tokens = scalar_at(report, "/usage/input_tokens");
+    let output_tokens = scalar_at(report, "/usage/output_tokens");
+    let cost = scalar_at(report, "/usage/cost_usd");
+    text.push_str("## Usage\n\n");
+    text.push_str("| metric | value |\n|---|---|\n");
+    text.push_str(&format!("| input_tokens | {input_tokens} |\n"));
+    text.push_str(&format!("| output_tokens | {output_tokens} |\n"));
+    text.push_str(&format!("| cost_usd | {cost} |\n\n"));
+
+    let started_calls = scalar_at(report, "/tool_summary/started");
+    let succeeded_calls = scalar_at(report, "/tool_summary/succeeded");
+    let failed_calls = scalar_at(report, "/tool_summary/failed");
+    let indeterminate_calls = scalar_at(report, "/tool_summary/indeterminate");
+    text.push_str("## Tool summary\n\n");
+    text.push_str("| state | count |\n|---|---|\n");
+    text.push_str(&format!("| started | {started_calls} |\n"));
+    text.push_str(&format!("| succeeded | {succeeded_calls} |\n"));
+    text.push_str(&format!("| failed | {failed_calls} |\n"));
+    text.push_str(&format!("| indeterminate | {indeterminate_calls} |\n\n"));
+
+    let events = array_at(report, "/events");
+    let event_count = scalar_at(report, "/event_count");
+    text.push_str(&format!("## Events ({event_count})\n\n"));
+    text.push_str("| seq | type | occurred_at |\n|---|---|---|\n");
+    for envelope in &events {
+        let seq = scalar_at(envelope, "/seq");
+        let kind = scalar_at(envelope, "/event/type");
+        let occurred = scalar_at(envelope, "/occurred_at");
+        text.push_str(&format!("| {seq} | {kind} | {occurred} |\n"));
+    }
+    text.push('\n');
+
+    let calls = array_at(report, "/tool_calls");
+    let call_count = scalar_at(report, "/tool_call_count");
+    text.push_str(&format!("## Tool calls ({call_count})\n\n"));
+    text.push_str("| step_id | tool | state | call_id |\n|---|---|---|---|\n");
+    for call in &calls {
+        let step = scalar_at(call, "/step_id");
+        let tool = scalar_at(call, "/tool_name");
+        let state = scalar_at(call, "/state");
+        let call_id = scalar_at(call, "/tool_call_id");
+        text.push_str(&format!("| {step} | {tool} | {state} | {call_id} |\n"));
+    }
+    text
+}
+
+/// Renders an `EvalReport` and its optional statistics companion.
+async fn report_experiment(args: ReportExperimentArgs, json: bool) -> Result<(), SilynError> {
+    let bundle = experiment_report_bundle(&args.report, args.stats.as_deref())?;
+    let markdown = render_experiment_markdown(&bundle);
+    emit_payload(&bundle, &markdown, args.format, json, args.out.as_deref())
+}
+
+/// Builds the experiment report document.
+///
+/// `--stats` is authoritative when present; without it the sibling
+/// `<report>.stats.json` is used when it exists. A missing companion is not an
+/// error: the bundle then carries the report's arms and no comparison, digest or
+/// verdict reason, because none of those are in the report schema.
+fn experiment_report_bundle(
+    report_path: &Path,
+    stats_path: Option<&Path>,
+) -> Result<serde_json::Value, SilynError> {
+    let report = read_json_document(report_path, "evaluation report")?;
+    let (stats_path, stats) = match stats_path {
+        Some(path) => (
+            Some(path.to_path_buf()),
+            Some(read_json_document(path, "statistics companion")?),
+        ),
+        None => {
+            let companion = report_path.with_extension("stats.json");
+            if companion.is_file() {
+                let value = read_json_document(&companion, "statistics companion")?;
+                (Some(companion), Some(value))
+            } else {
+                (None, None)
+            }
+        }
+    };
+
+    validate_report(&report)?;
+    let suite_version = require_text(&report, "suite_version", "evaluation report")?;
+    let model_id = require_text(&report, "model_id", "evaluation report")?;
+    let candidate_id = require_text(&report, "candidate_id", "evaluation report")?;
+    let baseline_id = require_text(&report, "baseline_id", "evaluation report")?;
+    let verdict = require_text(&report, "verdict", "evaluation report")?;
+    if let Some(stats) = stats.as_ref() {
+        validate_stats(stats)?;
+        let stats_suite = require_text(stats, "suite_version", "statistics companion")?;
+        if stats_suite != suite_version {
+            return Err(SilynError::Schema(format!(
+                "statistics suite_version `{stats_suite}` does not match the report `{suite_version}`"
+            )));
+        }
+    }
+    let stats_value = stats.as_ref();
+
+    let arms = experiment_arms(&report, stats_value);
+    let arm_count = arms.len();
+    let comparisons = stats_value
+        .and_then(|stats| stats.get("comparisons"))
+        .cloned()
+        .unwrap_or_else(|| serde_json::json!({}));
+    let digests = stats_value
+        .and_then(|stats| stats.get("suite_digests"))
+        .cloned()
+        .unwrap_or(serde_json::Value::Null);
+    let (thresholds, thresholds_source) =
+        match stats_value.and_then(|stats| stats.get("thresholds")) {
+            Some(thresholds) => (thresholds.clone(), "stats"),
+            None => (
+                report
+                    .get("thresholds")
+                    .cloned()
+                    .unwrap_or_else(|| serde_json::json!({})),
+                "report",
+            ),
+        };
+    let split = stats_value
+        .and_then(|stats| stats.get("split"))
+        .cloned()
+        .unwrap_or(serde_json::Value::Null);
+    let sealed = stats_value
+        .and_then(|stats| stats.get("sealed"))
+        .cloned()
+        .unwrap_or(serde_json::Value::Null);
+    let seed = stats_value
+        .and_then(|stats| stats.get("seed"))
+        .cloned()
+        .unwrap_or(serde_json::Value::Null);
+    let backend = stats_value
+        .and_then(|stats| stats.get("backend"))
+        .cloned()
+        .unwrap_or(serde_json::Value::Null);
+    let stats_verdict = stats_value
+        .and_then(|stats| stats.get("verdict"))
+        .cloned()
+        .unwrap_or(serde_json::Value::Null);
+    let reason = stats_value
+        .and_then(|stats| stats.get("verdict_reason"))
+        .cloned()
+        .unwrap_or(serde_json::Value::Null);
+    let unauthorized_actions = stats_value
+        .and_then(|stats| stats.get("unauthorized_actions"))
+        .cloned()
+        .unwrap_or(serde_json::Value::Null);
+    let model_reported = report
+        .get("model_reported")
+        .cloned()
+        .unwrap_or(serde_json::Value::Null);
+    let repeats = report
+        .get("repeats")
+        .cloned()
+        .or_else(|| stats_value.and_then(|stats| stats.get("repeats")).cloned())
+        .unwrap_or(serde_json::Value::Null);
+    let created_at = report
+        .get("created_at")
+        .cloned()
+        .unwrap_or(serde_json::Value::Null);
+
+    Ok(serde_json::json!({
+        "schema_version": 1,
+        "kind": "experiment_report",
+        "generated_at": chrono::Utc::now(),
+        "sources": {
+            "report": report_path.display().to_string(),
+            "stats": stats_path.as_ref().map(|path| path.display().to_string()),
+        },
+        "report": report,
+        "stats": stats,
+        "candidate_id": candidate_id,
+        "model_id": model_id,
+        "model_reported": model_reported,
+        "baseline_id": baseline_id,
+        "created_at": created_at,
+        "suite": {
+            "version": suite_version,
+            "split": split,
+            "sealed": sealed,
+            "repeats": repeats,
+            "seed": seed,
+            "backend": backend,
+            "digests": digests,
+        },
+        "arm_count": arm_count,
+        "arms": arms,
+        "comparisons": comparisons,
+        "thresholds": thresholds,
+        "thresholds_source": thresholds_source,
+        "verdict": verdict,
+        "stats_verdict": stats_verdict,
+        "reason": reason,
+        "unauthorized_actions": unauthorized_actions,
+    }))
+}
+
+/// Merges the report arms with the richer statistics arms, keyed by arm id.
+///
+/// Numbers come from the statistics companion when it carries them, otherwise
+/// from the report. `success_rate_pp` is computed from the counts only when
+/// neither document states it.
+fn experiment_arms(
+    report: &serde_json::Value,
+    stats: Option<&serde_json::Value>,
+) -> Vec<serde_json::Value> {
+    let Some(report_arms) = report.get("arms").and_then(serde_json::Value::as_object) else {
+        return Vec::new();
+    };
+
+    let mut arms = Vec::with_capacity(report_arms.len());
+    for (id, report_arm) in report_arms {
+        let stats_arm = stats
+            .and_then(|stats| stats.get("arms"))
+            .and_then(|arms| arms.get(id));
+        let successes = merged_value(stats_arm, report_arm, "successes");
+        let total = merged_value(stats_arm, report_arm, "total");
+        let rate = stats_arm
+            .and_then(|arm| arm.get("success_rate_pp"))
+            .cloned()
+            .or_else(|| success_rate(successes.as_u64(), total.as_u64()))
+            .unwrap_or(serde_json::Value::Null);
+
+        arms.push(serde_json::json!({
+            "id": id,
+            "label": optional_value(stats_arm, "label"),
+            "solver": optional_value(stats_arm, "solver"),
+            "model_id": optional_value(stats_arm, "model_id"),
+            "memory": optional_value(stats_arm, "memory"),
+            "evolution": optional_value(stats_arm, "evolution"),
+            "successes": successes,
+            "total": total,
+            "success_rate_pp": rate,
+            "cost_usd": merged_value(stats_arm, report_arm, "cost_usd"),
+            "latency_p50_ms": merged_value(stats_arm, report_arm, "latency_p50_ms"),
+            "latency_p95_ms": merged_value(stats_arm, report_arm, "latency_p95_ms"),
+            "tool_errors": merged_value(stats_arm, report_arm, "tool_errors"),
+            "unauthorized_actions": merged_value(stats_arm, report_arm, "unauthorized_actions"),
+        }));
+    }
+    arms
+}
+
+/// One percentage-point rate rounded to one decimal, or `None` without counts.
+fn success_rate(successes: Option<u64>, total: Option<u64>) -> Option<serde_json::Value> {
+    match (successes, total) {
+        (Some(successes), Some(total)) if total > 0 => {
+            let rate = successes as f64 / total as f64 * 100.0;
+            Some(serde_json::json!((rate * 10.0).round() / 10.0))
+        }
+        _ => None,
+    }
+}
+
+/// Statistics value first, report value second, JSON null last.
+fn merged_value(
+    stats_arm: Option<&serde_json::Value>,
+    report_arm: &serde_json::Value,
+    key: &str,
+) -> serde_json::Value {
+    stats_arm
+        .and_then(|arm| arm.get(key))
+        .or_else(|| report_arm.get(key))
+        .cloned()
+        .unwrap_or(serde_json::Value::Null)
+}
+
+/// Statistics value or JSON null; used for fields only the companion carries.
+fn optional_value(stats_arm: Option<&serde_json::Value>, key: &str) -> serde_json::Value {
+    stats_arm
+        .and_then(|arm| arm.get(key))
+        .cloned()
+        .unwrap_or(serde_json::Value::Null)
+}
+
+/// Checks the frozen report fields this command renders.
+fn validate_report(report: &serde_json::Value) -> Result<(), SilynError> {
+    if !report.is_object() {
+        return Err(SilynError::Schema(
+            "evaluation report must be a JSON object".to_owned(),
+        ));
+    }
+    match report
+        .get("schema_version")
+        .and_then(serde_json::Value::as_u64)
+    {
+        Some(1) => {}
+        Some(other) => {
+            return Err(SilynError::Schema(format!(
+                "evaluation report schema_version must be 1, got {other}"
+            )));
+        }
+        None => {
+            return Err(SilynError::Schema(
+                "evaluation report is missing schema_version".to_owned(),
+            ));
+        }
+    }
+    for key in [
+        "candidate_id",
+        "suite_version",
+        "model_id",
+        "baseline_id",
+        "verdict",
+    ] {
+        require_text(report, key, "evaluation report")?;
+    }
+    Ok(())
+}
+
+/// Checks the companion schema version; every other field is optional.
+fn validate_stats(stats: &serde_json::Value) -> Result<(), SilynError> {
+    if !stats.is_object() {
+        return Err(SilynError::Schema(
+            "statistics companion must be a JSON object".to_owned(),
+        ));
+    }
+    match stats
+        .get("schema_version")
+        .and_then(serde_json::Value::as_u64)
+    {
+        Some(1) => Ok(()),
+        Some(other) => Err(SilynError::Schema(format!(
+            "statistics schema_version must be 1, got {other}"
+        ))),
+        None => Err(SilynError::Schema(
+            "statistics companion is missing schema_version".to_owned(),
+        )),
+    }
+}
+
+/// Reads a required, non-empty string field.
+fn require_text(
+    document: &serde_json::Value,
+    key: &str,
+    label: &str,
+) -> Result<String, SilynError> {
+    match document.get(key).and_then(serde_json::Value::as_str) {
+        Some(value) if !value.trim().is_empty() => Ok(value.to_owned()),
+        Some(_) => Err(SilynError::Schema(format!(
+            "{label} field `{key}` is empty"
+        ))),
+        None => Err(SilynError::Schema(format!(
+            "{label} is missing field `{key}`"
+        ))),
+    }
+}
+
+/// Reads and parses one JSON document, reporting unreadable and invalid files
+/// as permanent errors (exit 5).
+fn read_json_document(path: &Path, label: &str) -> Result<serde_json::Value, SilynError> {
+    let text = std::fs::read_to_string(path).map_err(|error| {
+        SilynError::Storage(format!("cannot read {label} {}: {error}", path.display()))
+    })?;
+    serde_json::from_str(&text)
+        .map_err(|error| SilynError::Schema(format!("invalid {label} {}: {error}", path.display())))
+}
+
+/// Renders the experiment report as Markdown from the JSON bundle.
+fn render_experiment_markdown(report: &serde_json::Value) -> String {
+    let suite = scalar_at(report, "/suite/version");
+    let verdict = scalar_at(report, "/verdict");
+    let reason = scalar_at(report, "/reason");
+    let model = scalar_at(report, "/model_id");
+    let model_reported = scalar_at(report, "/model_reported");
+    let candidate = scalar_at(report, "/candidate_id");
+    let baseline = scalar_at(report, "/baseline_id");
+    let split = scalar_at(report, "/suite/split");
+    let sealed = scalar_at(report, "/suite/sealed");
+    let repeats = scalar_at(report, "/suite/repeats");
+    let seed = scalar_at(report, "/suite/seed");
+    let backend = scalar_at(report, "/suite/backend");
+    let unauthorized = scalar_at(report, "/unauthorized_actions");
+
+    let mut text = String::new();
+    text.push_str(&format!("# Experiment report: {suite}\n\n"));
+    text.push_str("## Summary\n\n");
+    text.push_str(&format!("- verdict: {verdict}\n"));
+    text.push_str(&format!("- reason: {reason}\n"));
+    text.push_str(&format!("- model: {model}\n"));
+    text.push_str(&format!("- model_reported: {model_reported}\n"));
+    text.push_str(&format!("- candidate: {candidate}\n"));
+    text.push_str(&format!("- baseline: {baseline}\n"));
+    text.push_str(&format!("- split: {split}\n"));
+    text.push_str(&format!("- sealed: {sealed}\n"));
+    text.push_str(&format!("- repeats: {repeats}\n"));
+    text.push_str(&format!("- seed: {seed}\n"));
+    text.push_str(&format!("- backend: {backend}\n"));
+    text.push_str(&format!("- unauthorized_actions: {unauthorized}\n\n"));
+
+    text.push_str("## Suite digests\n\n");
+    text.push_str("| split | sha256 |\n|---|---|\n");
+    for name in ["train", "dev", "test"] {
+        let digest = scalar_at(report, &format!("/suite/digests/{name}"));
+        text.push_str(&format!("| {name} | {digest} |\n"));
+    }
+    text.push('\n');
+
+    let arms = array_at(report, "/arms");
+    let arm_count = scalar_at(report, "/arm_count");
+    text.push_str(&format!("## Arms ({arm_count})\n\n"));
+    text.push_str(
+        "| arm | label | successes | total | success_rate_pp | cost_usd | latency_p95_ms |\n\
+         |---|---|---|---|---|---|---|\n",
+    );
+    for arm in &arms {
+        let id = scalar_at(arm, "/id");
+        let label = scalar_at(arm, "/label");
+        let successes = scalar_at(arm, "/successes");
+        let total = scalar_at(arm, "/total");
+        let rate = scalar_at(arm, "/success_rate_pp");
+        let cost = scalar_at(arm, "/cost_usd");
+        let p95 = scalar_at(arm, "/latency_p95_ms");
+        text.push_str(&format!(
+            "| {id} | {label} | {successes} | {total} | {rate} | {cost} | {p95} |\n"
+        ));
+    }
+    text.push('\n');
+
+    text.push_str("## Comparisons\n\n");
+    text.push_str(
+        "| comparison | point_pp | ci_low_pp | ci_high_pp | paired_tasks |\n\
+                   |---|---|---|---|---|\n",
+    );
+    for comparison in object_at(report, "/comparisons").values() {
+        let name = scalar_at(comparison, "/comparison");
+        let point = scalar_at(comparison, "/point_pp");
+        let low = scalar_at(comparison, "/ci_low_pp");
+        let high = scalar_at(comparison, "/ci_high_pp");
+        let paired = scalar_at(comparison, "/paired_tasks");
+        text.push_str(&format!(
+            "| {name} | {point} | {low} | {high} | {paired} |\n"
+        ));
+    }
+    text.push('\n');
+
+    let source = scalar_at(report, "/thresholds_source");
+    text.push_str(&format!("## Thresholds ({source})\n\n"));
+    text.push_str("| threshold | value |\n|---|---|\n");
+    for (name, value) in &object_at(report, "/thresholds") {
+        let rendered = match value {
+            serde_json::Value::String(text) => text.clone(),
+            other => other.to_string(),
+        };
+        text.push_str(&format!("| {name} | {rendered} |\n"));
+    }
+    text
+}
+
+/// Writes or prints one report payload.
+///
+/// `--json` forces the JSON encoding. With `--out` and `--json`, stdout carries
+/// a small metadata document (`path`, `format`, `bytes`) so the caller still gets
+/// exactly one JSON document; the payload itself is in the file.
+fn emit_payload(
+    payload: &serde_json::Value,
+    markdown: &str,
+    format: ReportFormat,
+    json: bool,
+    out: Option<&Path>,
+) -> Result<(), SilynError> {
+    let format = if json { ReportFormat::Json } else { format };
+    let body = match format {
+        ReportFormat::Json => {
+            let mut text = serde_json::to_string_pretty(payload)?;
+            text.push('\n');
+            text
+        }
+        ReportFormat::Markdown => {
+            let mut text = markdown.to_owned();
+            if !text.ends_with('\n') {
+                text.push('\n');
+            }
+            text
+        }
+    };
+
+    match out {
+        Some(path) => {
+            std::fs::write(path, &body).map_err(|error| {
+                SilynError::Storage(format!(
+                    "cannot write report to {}: {error}",
+                    path.display()
+                ))
+            })?;
+            if json {
+                return print_json(&serde_json::json!({
+                    "path": path.display().to_string(),
+                    "format": format.as_str(),
+                    "bytes": body.len(),
+                }));
+            }
+            println!("wrote {}", path.display());
+            Ok(())
+        }
+        None => {
+            print!("{body}");
+            Ok(())
+        }
+    }
+}
+
+/// Renders a JSON scalar as text; missing and null values become `-`.
+fn scalar_at(value: &serde_json::Value, pointer: &str) -> String {
+    match value.pointer(pointer) {
+        None | Some(serde_json::Value::Null) => "-".to_owned(),
+        Some(serde_json::Value::String(text)) => text.clone(),
+        Some(other) => other.to_string(),
+    }
+}
+
+/// Clones a JSON array; a missing pointer yields an empty vector.
+fn array_at(value: &serde_json::Value, pointer: &str) -> Vec<serde_json::Value> {
+    value
+        .pointer(pointer)
+        .and_then(serde_json::Value::as_array)
+        .cloned()
+        .unwrap_or_default()
+}
+
+/// Clones a JSON object; a missing pointer yields an empty map.
+fn object_at(
+    value: &serde_json::Value,
+    pointer: &str,
+) -> serde_json::Map<String, serde_json::Value> {
+    value
+        .pointer(pointer)
+        .and_then(serde_json::Value::as_object)
+        .cloned()
+        .unwrap_or_default()
 }
 
 fn print_agent(record: &AgentRecord, json: bool) -> Result<(), SilynError> {
