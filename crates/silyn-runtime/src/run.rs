@@ -10,7 +10,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use silyn_core::SilynError;
 use silyn_core::contracts::{
@@ -57,7 +57,7 @@ pub struct RunOptions {
 }
 
 /// Result of one run. `status` is terminal: completed, failed or cancelled.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct RunOutcome {
     pub run_id: RunId,
     pub status: RunStatus,
@@ -106,6 +106,27 @@ impl Runtime {
         task_id: TaskId,
         options: RunOptions,
     ) -> Result<RunOutcome, SilynError> {
+        let record = self.create_run(task_id, &options).await?;
+        self.run_existing(record.id, options, RecoveryMode::Execute)
+            .await
+    }
+
+    /// Creates a run row for `task_id` in the `created` state and appends
+    /// `RunCreated`, without executing anything.
+    ///
+    /// This exists so a caller can learn the run id before execution starts and
+    /// pass that run's cross-process cancel file through
+    /// [`RunOptions::cancel_file`]. The caller is responsible for calling
+    /// [`execute`](Self::execute) afterwards; [`run_task`](Self::run_task) does
+    /// both in one step.
+    ///
+    /// A missing task, a terminal task or an invalid budget configuration is a
+    /// permanent error and creates no row.
+    pub async fn create_run(
+        &self,
+        task_id: TaskId,
+        options: &RunOptions,
+    ) -> Result<RunRecord, SilynError> {
         // Fail before creating a row when the budget configuration is invalid.
         BudgetTracker::new(options.budget.clone(), options.price)?;
 
@@ -150,8 +171,7 @@ impl Runtime {
         )
         .await?;
 
-        self.run_existing(run_id, options, RecoveryMode::Execute)
-            .await
+        Ok(record)
     }
 
     /// Starts a run that has not begun yet. Running runs must go through

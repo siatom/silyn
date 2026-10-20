@@ -1,34 +1,37 @@
 //! Silyn CLI. Kept scriptable on purpose: stable exit codes and `--json` output.
 //!
-//! Exit codes (see `docs/gates/w2-03.md`):
+//! Exit codes (see `docs/gates/w2-03.md` and `docs/gates/w3-03.md`):
 //!
 //! | code | meaning |
 //! |------|---------|
-//! | 0 | success |
+//! | 0 | success, including a run that completed |
 //! | 2 | usage error (argument parsing) |
-//! | 3 | policy denied |
+//! | 3 | run cancelled, or a policy denial |
 //! | 4 | transient failure, safe to retry |
 //! | 5 | permanent failure or indeterminate outcome, do not retry blindly |
 //!
 //! This binary contains no business logic: every command delegates to
 //! `silyn-app` and only formats results.
 
+use std::collections::HashSet;
 use std::env;
 use std::path::PathBuf;
 use std::process::ExitCode;
+use std::time::Duration;
 
 use clap::{CommandFactory, Parser, Subcommand};
 use silyn_app::{
-    AgentRecord, App, RunRecord, SessionRecord, TaskRecord, ToolCallRecord, ToolCallState,
+    AgentRecord, App, BudgetSpec, RunOptions, RunOutcome, RunRecord, RunRequest, SessionRecord,
+    TaskRecord, ToolCallRecord, ToolCallState,
 };
 use silyn_core::SilynError;
 use silyn_core::error::ErrorClass;
-use silyn_core::event::RunEvent;
-use silyn_core::ids::{AgentId, RunId, SessionId};
+use silyn_core::event::{RunEvent, VerifiedOutcome};
+use silyn_core::ids::{AgentId, RunId, SessionId, TaskId};
 use silyn_core::state::RunStatus;
 
-/// Exit code for a policy denial.
-const EXIT_POLICY_DENIED: u8 = 3;
+/// Exit code for a policy denial and for a cancelled run.
+const EXIT_CANCELLED: u8 = 3;
 /// Exit code for a transient failure.
 const EXIT_TRANSIENT: u8 = 4;
 /// Exit code for a permanent failure. Also used for indeterminate outcomes so
@@ -75,12 +78,57 @@ enum Command {
         #[command(subcommand)]
         command: RunsCommand,
     },
-    /// Execute a task (requires the runtime loop, which lands in W3).
-    Run,
+    /// Execute a task, or resume an existing run, through the runtime loop.
+    Run(RunArgs),
     /// Print build, platform and configuration diagnostics.
     Doctor,
     /// Print resolved non-secret configuration.
     Config,
+}
+
+/// Arguments for `silyn run`.
+///
+/// Exactly one source is required: `--task`, `--resume`, or `--session` with
+/// `--objective`. The app layer validates the combination, so a missing source
+/// is a permanent error (exit 5) instead of a clap usage error.
+#[derive(Debug, clap::Args)]
+struct RunArgs {
+    /// Task id (UUID) to execute.
+    #[arg(long, value_parser = parse_task_id)]
+    task: Option<TaskId>,
+    /// Session id (UUID) used to create the task. Requires `--objective`.
+    #[arg(long, value_parser = parse_session_id, requires = "objective")]
+    session: Option<SessionId>,
+    /// Objective of the task created for `--session`. Requires `--session`.
+    #[arg(long, value_parser = parse_objective, requires = "session")]
+    objective: Option<String>,
+    /// Resume a created or interrupted run.
+    #[arg(long, value_parser = parse_run_id)]
+    resume: Option<RunId>,
+    /// Use the deterministic offline provider: no API key, no network.
+    #[arg(long)]
+    offline: bool,
+    /// Model id recorded on the run.
+    #[arg(long)]
+    model: Option<String>,
+    /// Maximum number of model steps.
+    #[arg(long)]
+    max_steps: Option<u32>,
+    /// Maximum wall-clock time in seconds.
+    #[arg(long)]
+    max_wall_secs: Option<u64>,
+    /// Maximum input tokens across the run.
+    #[arg(long)]
+    max_input_tokens: Option<u64>,
+    /// Maximum output tokens across the run.
+    #[arg(long)]
+    max_output_tokens: Option<u64>,
+    /// Maximum cost in USD. Requires a configured price table.
+    #[arg(long)]
+    max_cost_usd: Option<f64>,
+    /// Capability granted to the run (repeatable). Defaults to none.
+    #[arg(long = "capability", value_name = "NAME")]
+    capabilities: Vec<String>,
 }
 
 #[derive(Debug, Subcommand)]
@@ -156,15 +204,15 @@ async fn main() -> ExitCode {
     let cli = Cli::parse();
     match cli.command {
         Some(command) => match dispatch(command, cli.json).await {
-            Ok(()) => ExitCode::SUCCESS,
+            Ok(code) => code,
             Err(error) => report(&error, cli.json),
         },
         None => print_help(),
     }
 }
 
-async fn dispatch(command: Command, json: bool) -> Result<(), SilynError> {
-    match command {
+async fn dispatch(command: Command, json: bool) -> Result<ExitCode, SilynError> {
+    let result = match command {
         Command::Init => init(json).await,
         Command::Agent { command } => match command {
             AgentCommand::Create { owner } => agent_create(&owner, json).await,
@@ -185,14 +233,13 @@ async fn dispatch(command: Command, json: bool) -> Result<(), SilynError> {
             RunsCommand::Tools { id } => runs_tools(id, json).await,
             RunsCommand::Cancel { id } => runs_cancel(id, json).await,
         },
-        // The runtime loop is W3. Returning a permanent error keeps `run`
-        // scriptable without inventing a run record that never executed.
-        Command::Run => Err(SilynError::Permanent(
-            "runtime loop is not available until W3".to_owned(),
-        )),
+        // `run` maps the run outcome to a stable exit code, so it owns the code.
+        Command::Run(args) => return run(args, json).await,
         Command::Doctor => doctor(json),
         Command::Config => config(json),
-    }
+    };
+
+    result.map(|()| ExitCode::SUCCESS)
 }
 
 fn print_help() -> ExitCode {
@@ -223,7 +270,7 @@ fn report(error: &SilynError, json: bool) -> ExitCode {
     }
 
     match error.class() {
-        ErrorClass::PolicyDenied => ExitCode::from(EXIT_POLICY_DENIED),
+        ErrorClass::PolicyDenied => ExitCode::from(EXIT_CANCELLED),
         ErrorClass::Transient => ExitCode::from(EXIT_TRANSIENT),
         // An indeterminate side effect must never look retryable or successful.
         ErrorClass::Permanent | ErrorClass::Indeterminate => ExitCode::from(EXIT_PERMANENT),
@@ -497,6 +544,114 @@ async fn runs_cancel(id: RunId, json: bool) -> Result<(), SilynError> {
     Ok(())
 }
 
+/// Executes or resumes a run and maps its terminal status to an exit code.
+///
+/// A failed or cancelled run is a *result*, not a CLI error: the `RunOutcome`
+/// is printed on stdout and the process exits 5 or 3 so scripts can branch
+/// without parsing stderr.
+async fn run(args: RunArgs, json: bool) -> Result<ExitCode, SilynError> {
+    // Validation runs before storage is touched, so an invalid request can
+    // never create a home directory or a database.
+    let request = args.into_request()?;
+    let app = App::open(home_dir()).await?;
+    let outcome = app.run(request).await?;
+
+    if json {
+        print_json(&serde_json::to_value(&outcome)?)?;
+    } else {
+        print_outcome(&outcome);
+    }
+
+    Ok(match outcome.status {
+        RunStatus::Completed => ExitCode::SUCCESS,
+        RunStatus::Cancelled => ExitCode::from(EXIT_CANCELLED),
+        _ => ExitCode::from(EXIT_PERMANENT),
+    })
+}
+
+impl RunArgs {
+    /// Converts parsed flags into a validated service request.
+    ///
+    /// Budget defaults come from [`BudgetSpec::default`]; `--offline` is carried
+    /// separately because it selects the provider, not the run record.
+    fn into_request(self) -> Result<RunRequest, SilynError> {
+        let defaults = BudgetSpec::default();
+        let options = RunOptions {
+            model: self
+                .model
+                .map(|model| model.trim().to_owned())
+                .filter(|model| !model.is_empty())
+                .unwrap_or_else(default_model),
+            capabilities: dedupe(self.capabilities),
+            budget: BudgetSpec {
+                max_steps: self.max_steps.unwrap_or(defaults.max_steps),
+                max_input_tokens: self.max_input_tokens.unwrap_or(defaults.max_input_tokens),
+                max_output_tokens: self.max_output_tokens.unwrap_or(defaults.max_output_tokens),
+                max_cost_usd: self.max_cost_usd,
+                max_wall_clock: Duration::from_secs(
+                    self.max_wall_secs
+                        .unwrap_or(defaults.max_wall_clock.as_secs()),
+                ),
+                step_timeout: defaults.step_timeout,
+            },
+            // The service fills the price from the provider configuration; a
+            // cost cap without a configured price is a permanent error there.
+            price: None,
+            // Filled once the run id exists, so another process can cancel it.
+            cancel_file: None,
+        };
+
+        let request = RunRequest {
+            task_id: self.task,
+            session_id: self.session,
+            objective: self.objective,
+            resume: self.resume,
+            options,
+            offline: self.offline,
+        };
+        request.validate()?;
+        Ok(request)
+    }
+}
+
+/// Default model id: `SILYN_LLM_MODEL`, else `deepseek-chat`.
+fn default_model() -> String {
+    env::var("SILYN_LLM_MODEL")
+        .ok()
+        .filter(|model| !model.trim().is_empty())
+        .unwrap_or_else(|| silyn_llm::DEEPSEEK_MODEL.to_owned())
+}
+
+/// Drops repeated capability names while keeping the caller's order.
+fn dedupe(names: Vec<String>) -> Vec<String> {
+    let mut seen = HashSet::new();
+    names
+        .into_iter()
+        .filter(|name| seen.insert(name.clone()))
+        .collect()
+}
+
+/// Human-readable summary of one finished run.
+fn print_outcome(outcome: &RunOutcome) {
+    println!("run: {}", outcome.run_id);
+    println!("status: {}", status_name(outcome.status));
+    println!(
+        "outcome: {}",
+        outcome.outcome.map_or_else(|| "-".to_owned(), outcome_name)
+    );
+    println!("steps: {}", outcome.steps);
+    println!("input_tokens: {}", outcome.input_tokens);
+    println!("output_tokens: {}", outcome.output_tokens);
+    println!("cost_usd: {:.6}", outcome.cost_usd);
+    println!(
+        "final_answer: {}",
+        outcome.final_answer.as_deref().unwrap_or("-")
+    );
+    if let Some(reason) = &outcome.reason {
+        println!("reason: {reason}");
+    }
+}
+
 fn print_agent(record: &AgentRecord, json: bool) -> Result<(), SilynError> {
     if json {
         return print_json(&serde_json::to_value(record)?);
@@ -546,6 +701,14 @@ fn timestamp(value: Option<chrono::DateTime<chrono::Utc>>) -> String {
 /// Status names match the JSON wire format (snake_case).
 fn status_name(status: RunStatus) -> String {
     match serde_json::to_value(status) {
+        Ok(serde_json::Value::String(name)) => name,
+        _ => "unknown".to_owned(),
+    }
+}
+
+/// Verified-outcome names match the JSON wire format (snake_case).
+fn outcome_name(outcome: VerifiedOutcome) -> String {
+    match serde_json::to_value(outcome) {
         Ok(serde_json::Value::String(name)) => name,
         _ => "unknown".to_owned(),
     }
@@ -655,6 +818,12 @@ fn parse_session_id(value: &str) -> Result<SessionId, String> {
     value
         .parse()
         .map_err(|error| format!("invalid session id `{value}`: {error}"))
+}
+
+fn parse_task_id(value: &str) -> Result<TaskId, String> {
+    value
+        .parse()
+        .map_err(|error| format!("invalid task id `{value}`: {error}"))
 }
 
 fn parse_run_id(value: &str) -> Result<RunId, String> {

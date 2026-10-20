@@ -11,9 +11,12 @@ repository.workspace = true
 silyn-core = { path = "../silyn-core" }
 silyn-growth = { path = "../silyn-growth" }
 silyn-llm = { path = "../silyn-llm" }
+silyn-runtime = { path = "../silyn-runtime" }
 silyn-storage = { path = "../silyn-storage" }
+async-trait.workspace = true
 chrono.workspace = true
 serde.workspace = true
+serde_json.workspace = true
 sqlx.workspace = true
 
 [dev-dependencies]

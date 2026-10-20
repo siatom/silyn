@@ -1,0 +1,112 @@
+# W3-03 acceptance gates: CLI run/resume integration.
+#
+# Every `run` test is offline: the deterministic mock provider reads no API key
+# and opens no connection. The service-level gates cover the validation and
+# cancel-file contract without a second process.
+
+[[gate]]
+id = "cli.run_completes_offline"
+test = "crates/silyn-cli/tests/run.rs::run_offline_completes"
+required = true
+
+[[gate]]
+id = "cli.run_creates_run_and_events"
+test = "crates/silyn-cli/tests/run.rs::run_records_lifecycle_events"
+required = true
+
+[[gate]]
+id = "cli.run_budget_failure_exit_five"
+test = "crates/silyn-cli/tests/run.rs::run_budget_failure_exits_five"
+required = true
+
+[[gate]]
+id = "cli.resume_unknown_run_exits_five"
+test = "crates/silyn-cli/tests/run.rs::run_resume_unknown_run_exits_five"
+required = true
+
+[[gate]]
+id = "cli.run_cancel_request_path"
+test = "crates/silyn-app/src/runtime_service.rs::run_passes_the_documented_cancel_file_to_the_loop"
+required = true
+
+[[gate]]
+id = "cli.run_task_unknown_exits_five"
+test = "crates/silyn-cli/tests/run.rs::run_task_unknown_exits_five"
+required = true
+
+[[gate]]
+id = "cli.run_task_executes_existing_task"
+test = "crates/silyn-cli/tests/run.rs::run_task_executes_an_existing_task"
+required = true
+
+[[gate]]
+id = "cli.run_resume_terminal_rejected"
+test = "crates/silyn-cli/tests/run.rs::run_resume_terminal_run_exits_five"
+required = true
+
+[[gate]]
+id = "cli.run_without_source_exits_five"
+test = "crates/silyn-cli/tests/run.rs::run_without_a_source_exits_five_and_creates_no_database"
+required = true
+
+[[gate]]
+id = "cli.run_rejects_conflicting_sources"
+test = "crates/silyn-cli/tests/run.rs::run_rejects_conflicting_sources"
+required = true
+
+[[gate]]
+id = "cli.run_usage_errors_exit_two"
+test = "crates/silyn-cli/tests/run.rs::run_groups_usage_errors_exit_two"
+required = true
+
+[[gate]]
+id = "cli.run_offline_never_prints_api_key"
+test = "crates/silyn-cli/tests/run.rs::run_offline_never_prints_api_key"
+required = true
+
+[[gate]]
+id = "cli.run_request_validation"
+test = "crates/silyn-app/src/runtime_service.rs::request_requires_exactly_one_source"
+required = true
+
+[[gate]]
+id = "cli.run_session_objective_pairing"
+test = "crates/silyn-app/src/runtime_service.rs::session_and_objective_must_be_paired_and_non_empty"
+required = true
+
+[[gate]]
+id = "cli.run_resume_excludes_other_sources"
+test = "crates/silyn-app/src/runtime_service.rs::resume_cannot_be_combined_with_other_sources"
+required = true
+
+[[gate]]
+id = "cli.answer_verifier_unknown"
+test = "crates/silyn-app/src/runtime_service.rs::answer_verifier_never_claims_success"
+required = true
+
+[[gate]]
+id = "cli.service_offline_run_completes"
+test = "crates/silyn-app/src/runtime_service.rs::offline_run_completes_and_is_recorded"
+required = true
+
+[[gate]]
+id = "cli.service_budget_failure_fails_run"
+test = "crates/silyn-app/src/runtime_service.rs::budget_exhaustion_fails_the_run_without_a_terminal_error"
+required = true
+
+[[gate]]
+id = "cli.service_unknown_run_not_resumed"
+test = "crates/silyn-app/src/runtime_service.rs::unknown_and_terminal_runs_are_not_resumed"
+required = true
+
+# Superseded W3-02 expectation, re-gated with the W3-03 no-source message. The
+# test names are kept so the W3-02 gate ids stay valid.
+[[gate]]
+id = "cli.run_no_arg_permanent_message"
+test = "crates/silyn-cli/tests/cli.rs::run_exits_permanent_without_creating_a_run"
+required = true
+
+[[gate]]
+id = "cli.run_no_arg_creates_no_run"
+test = "crates/silyn-cli/tests/observe.rs::run_still_exits_five_and_creates_no_run"
+required = true

@@ -190,14 +190,17 @@ fn run_exits_permanent_without_creating_a_run() {
     let output = sandbox.run(&["run"]);
 
     assert_eq!(output.status.code(), Some(5), "stderr: {}", stderr(&output));
+    // W3-03 replaced the "runtime loop is not available" placeholder with the
+    // real command; a request without a source is still a permanent error and
+    // still must not open storage.
     assert!(
-        stderr(&output).contains("runtime loop is not available until W3"),
+        stderr(&output).contains("requires exactly one of --task, --resume"),
         "stderr: {}",
         stderr(&output)
     );
     assert!(
         !sandbox.database().exists(),
-        "`run` must not create storage before the runtime exists"
+        "`run` must not create storage for an invalid request"
     );
 }
 

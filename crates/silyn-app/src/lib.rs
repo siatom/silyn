@@ -5,11 +5,17 @@
 
 mod app;
 mod observability;
+mod runtime_service;
 
 pub use app::{
     App, DEFAULT_CONTEXT_VERSION, DEFAULT_PROFILE_VERSION, InitReport, RECENT_RUNS_LIMIT,
 };
 pub use observability::{CancelRequest, RUN_SIGNAL_DIR};
+pub use runtime_service::{AnswerVerifier, OFFLINE_ANSWER, RunRequest, WORKSPACE_DIR};
+
+// Runtime contracts are re-exported so frontends never depend on `silyn-runtime`
+// directly; the CLI only sees the app service surface.
+pub use silyn_runtime::{BudgetSpec, RunOptions, RunOutcome};
 
 // Records are re-exported so frontends never depend on `silyn-storage` directly.
 pub use silyn_storage::{
