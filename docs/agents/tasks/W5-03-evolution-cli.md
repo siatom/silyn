@@ -10,6 +10,7 @@ owns:
   - crates/silyn-app/Cargo.toml
   - crates/silyn-cli/src/main.rs
   - crates/silyn-cli/tests/evolution.rs
+  - crates/silyn-growth/src/policy.rs
   - eval/acceptance/w5-03.toml
   - docs/gates/w5-03.md
 reads:
@@ -47,6 +48,7 @@ report, auto-promote, then roll back with an audit trail.
 ## CLI surface
 
 ```text
+silyn evolution init --agent <id> [--json]
 silyn evolution list --agent <id> [--json]
 silyn evolution show <candidate-id> --agent <id> [--json]
 silyn evolution submit --agent <id> --patch <file|-> [--json]
@@ -56,11 +58,17 @@ silyn evolution rollback <promotion-id> --agent <id> [--json]
 silyn evolution approve <candidate-id> --agent <id> --as <operator> [--json]
 ```
 
+- `init`: create the default immutable policy artifact for an agent, activate
+  it, and print the version id. This is the base every candidate patches. Add
+  `PolicyStore::activate` to `silyn-growth/src/policy.rs` (the only growth
+  change in this task).
 - `submit`: read `PolicyPatch` JSON, call `CandidateStore::submit`, print the
   candidate id/state; static failures exit 5 with the reason.
-- `evaluate`: read an `EvaluationReport` JSON, validate it against the schema
-  fields, derive a `PromotionReport`, store an `evaluation_runs` row, move the
-  candidate to `Evaluated`; never invent metrics.
+- `evaluate`: read an `EvaluationReport` JSON plus its companion
+  `<report>.stats.json` (or `--stats <file>`), derive a `PromotionReport`
+  (`gain_pp`, `ci_low_pp`, `unauthorized_actions`, evidence ids, suite version,
+  report sha256), store an `evaluation_runs` row, move the candidate to
+  `Evaluated`; never invent metrics.
 - `promote`: call `PromotionStore::decide`; auto-promote low-risk, otherwise
   `AwaitingApproval`. Print decision and versions.
 - `rollback`: restore the previous policy version and print both ids.
@@ -78,6 +86,8 @@ active policy, and exposes the same methods. It must not duplicate SQL.
 Use temp home plus a synthetic policy/version and a hand-written evaluation
 report (no network):
 
+- `evolution init` creates an active base policy; `evolution list` shows the
+  agent's policy/candidate state.
 - submit valid low-risk patch -> `static_checked`; forbidden `/tools` patch
   exits 5 and creates no candidate.
 - evaluate attaches report, candidate `evaluated`.
