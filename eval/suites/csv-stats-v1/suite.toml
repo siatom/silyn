@@ -1,0 +1,33 @@
+# SuiteManifest v1 for the MVP synthetic CSV task family.
+#
+# Thresholds are pre-registered (ADR 0004): C - B >= +10pp, cost <= 2x baseline,
+# regression <= 5pp. They must never be edited after the first real run; a
+# changed threshold invalidates the report and requires a new suite version.
+#
+# `sealed = false` until W5 wires the sealed test run. The suite lock already
+# freezes this file and README.md, so any edit must ship a new suite version.
+
+suite_id = "csv-stats-v1"
+version = "csv-stats-v1"
+task_family = "csv-stats"
+repeats = 1
+sealed = false
+
+[thresholds]
+min_gain_pp = 10.0
+max_cost_ratio = 2.0
+max_regression_pp = 5.0
+# Absolute cap for a paid provider; the mock provider spends nothing.
+max_cost_usd = 1.0
+
+[splits.train]
+count = 20
+sha256 = "798711e9e2fe9c40aaae3a68b8a7751d5e0e2f7c98daa41e344253013531ead8"
+
+[splits.dev]
+count = 10
+sha256 = "f4abda23f50c22e75f8577ced0d66bc8364dddfd17f3d15738ef8f4a9f497f13"
+
+[splits.test]
+count = 10
+sha256 = "960ccb10f1d4acee7cae85548818a0e1ca52fec62d907978736c0c47907eb040"
