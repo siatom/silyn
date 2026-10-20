@@ -1575,23 +1575,30 @@ dependencies = [
 name = "silyn-app"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "silyn-core",
  "silyn-growth",
  "silyn-llm",
  "silyn-runtime",
  "silyn-storage",
+ "sqlx",
+ "tempfile",
+ "tokio",
 ]
 
 [[package]]
 name = "silyn-cli"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "clap",
  "dotenvy",
  "serde_json",
  "silyn-app",
  "silyn-core",
  "silyn-llm",
+ "tempfile",
+ "tokio",
 ]
 
 [[package]]

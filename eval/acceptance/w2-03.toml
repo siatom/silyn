@@ -1,0 +1,31 @@
+# W2-03 acceptance gates: CLI and service layer.
+
+[[gate]]
+id = "cli.init_creates_database"
+test = "crates/silyn-cli/tests/cli.rs::init_creates_database"
+required = true
+
+[[gate]]
+id = "cli.json_output_is_stable"
+test = "crates/silyn-cli/tests/cli.rs::agent_json_output_round_trips"
+required = true
+
+[[gate]]
+id = "cli.runs_list_is_json_array"
+test = "crates/silyn-cli/tests/cli.rs::runs_list_returns_json_array"
+required = true
+
+[[gate]]
+id = "cli.exit_codes_are_stable"
+test = "crates/silyn-cli/tests/cli.rs::run_exits_permanent_without_creating_a_run"
+required = true
+
+[[gate]]
+id = "cli.usage_errors_exit_two"
+test = "crates/silyn-cli/tests/cli.rs::usage_errors_exit_two"
+required = true
+
+[[gate]]
+id = "app.agent_session_task_round_trip"
+test = "crates/silyn-app/src/app.rs::agent_session_task_round_trip"
+required = true
