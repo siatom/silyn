@@ -1575,11 +1575,14 @@ dependencies = [
 name = "silyn-app"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "chrono",
  "serde",
+ "serde_json",
  "silyn-core",
  "silyn-growth",
  "silyn-llm",
+ "silyn-runtime",
  "silyn-storage",
  "sqlx",
  "tempfile",

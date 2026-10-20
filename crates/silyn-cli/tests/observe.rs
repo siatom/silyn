@@ -4,9 +4,9 @@
 //! working directory, so `dotenvy` cannot pick up a developer `.env` and the
 //! tests never touch the real `.silyn` directory or the network.
 //!
-//! The CLI has no command that creates a run before the runtime loop lands, so
-//! runs, journal events and ledger rows are seeded through `silyn-storage`
-//! before the binary is invoked.
+//! The read/control tests seed runs, journal events and ledger rows through
+//! `silyn-storage` before the binary is invoked. `silyn run` itself is covered
+//! by `tests/run.rs` (W3-03).
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -408,7 +408,9 @@ async fn run_still_exits_five_and_creates_no_run() {
 
     let output = sandbox.run(&["run"]);
 
-    assert_exit_five(&output, "runtime loop is not available until W3");
+    // W3-03 turned `run` into a real command; the no-source case stays a
+    // permanent error (exit 5) and must not create a run.
+    assert_exit_five(&output, "requires exactly one of --task, --resume");
     let runs = json_stdout(&sandbox.run(&["runs", "list", "--json"]));
     assert_eq!(runs, Value::Array(Vec::new()));
 }
