@@ -15,21 +15,24 @@
 
 use std::collections::HashSet;
 use std::env;
+use std::io::Read as _;
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::Duration;
 
 use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
 use silyn_app::{
-    AgentRecord, App, BudgetSpec, ExperienceRecord, MemoryHitRecord, MemoryScope, Provenance,
-    RunOptions, RunOutcome, RunRecord, RunRequest, SessionRecord, TaskRecord, ToolCallRecord,
-    ToolCallState,
+    AgentRecord, App, BudgetSpec, CandidateDetail, CandidateRecord, EvaluationAttachment,
+    ExperienceRecord, MemoryHitRecord, MemoryScope, PolicyInventory, PolicyPatch,
+    PolicyVersionRecord, PromotionResult, Provenance, RollbackResult, RunOptions, RunOutcome,
+    RunRecord, RunRequest, SessionRecord, TaskRecord, ToolCallRecord, ToolCallState,
 };
 use silyn_core::SilynError;
+use silyn_core::contracts::PromotionDecision;
 use silyn_core::error::ErrorClass;
 use silyn_core::event::{RunEvent, VerifiedOutcome};
-use silyn_core::ids::{AgentId, RunId, SessionId, TaskId};
-use silyn_core::state::RunStatus;
+use silyn_core::ids::{AgentId, CandidateId, PromotionId, RunId, SessionId, TaskId};
+use silyn_core::state::{CandidateState, RunStatus};
 
 /// Exit code for a policy denial and for a cancelled run.
 const EXIT_CANCELLED: u8 = 3;
@@ -83,6 +86,11 @@ enum Command {
     Experience {
         #[command(subcommand)]
         command: ExperienceCommand,
+    },
+    /// Inspect and operate the policy evolution pipeline.
+    Evolution {
+        #[command(subcommand)]
+        command: EvolutionCommand,
     },
     /// Inspect execution runs.
     Runs {
@@ -238,6 +246,87 @@ enum ExperienceCommand {
     },
 }
 
+/// `silyn evolution`: submit, evaluate, approve, promote and roll back policy
+/// candidates. All state changes go through `silyn-app`.
+#[derive(Debug, Subcommand)]
+enum EvolutionCommand {
+    /// Create and activate the default base policy of an agent.
+    Init {
+        /// Agent id (UUID).
+        #[arg(long, value_parser = parse_agent_id)]
+        agent: AgentId,
+    },
+    /// Show the agent's active policy and candidates.
+    List {
+        /// Agent id (UUID).
+        #[arg(long, value_parser = parse_agent_id)]
+        agent: AgentId,
+    },
+    /// Show one candidate with its evaluations, promotions and audit trail.
+    Show {
+        /// Candidate id (UUID).
+        #[arg(value_parser = parse_candidate_id)]
+        id: CandidateId,
+        /// Agent id (UUID).
+        #[arg(long, value_parser = parse_agent_id)]
+        agent: AgentId,
+    },
+    /// Submit a `PolicyPatch` JSON document (a path, or `-` for stdin).
+    Submit {
+        /// Agent id (UUID).
+        #[arg(long, value_parser = parse_agent_id)]
+        agent: AgentId,
+        /// Patch file, or `-` to read standard input.
+        #[arg(long, value_name = "FILE|-")]
+        patch: String,
+    },
+    /// Attach an evaluation report and its statistics companion.
+    Evaluate {
+        /// Candidate id (UUID).
+        #[arg(value_parser = parse_candidate_id)]
+        id: CandidateId,
+        /// Agent id (UUID).
+        #[arg(long, value_parser = parse_agent_id)]
+        agent: AgentId,
+        /// `EvaluationReport` JSON document.
+        #[arg(long, value_name = "FILE")]
+        report: PathBuf,
+        /// Statistics companion; defaults to `<report>.stats.json`.
+        #[arg(long, value_name = "FILE")]
+        stats: Option<PathBuf>,
+    },
+    /// Local operator approval of a candidate awaiting approval.
+    Approve {
+        /// Candidate id (UUID).
+        #[arg(value_parser = parse_candidate_id)]
+        id: CandidateId,
+        /// Agent id (UUID).
+        #[arg(long, value_parser = parse_agent_id)]
+        agent: AgentId,
+        /// Operator label recorded in the audit trail.
+        #[arg(long = "as", value_name = "OPERATOR", value_parser = parse_operator)]
+        operator: String,
+    },
+    /// Run the promotion gate and promote when the decision allows it.
+    Promote {
+        /// Candidate id (UUID).
+        #[arg(value_parser = parse_candidate_id)]
+        id: CandidateId,
+        /// Agent id (UUID).
+        #[arg(long, value_parser = parse_agent_id)]
+        agent: AgentId,
+    },
+    /// Restore the policy version a promotion replaced.
+    Rollback {
+        /// Promotion id (UUID).
+        #[arg(value_parser = parse_promotion_id)]
+        id: PromotionId,
+        /// Agent id (UUID).
+        #[arg(long, value_parser = parse_agent_id)]
+        agent: AgentId,
+    },
+}
+
 /// CLI-facing memory scope names (`agent`, `session`).
 #[derive(Debug, Clone, Copy, ValueEnum)]
 enum MemoryScopeArg {
@@ -357,6 +446,9 @@ async fn dispatch(command: Command, json: bool) -> Result<ExitCode, SilynError> 
         Command::Experience { command } => match command {
             ExperienceCommand::List { agent } => experience_list(agent, json).await,
         },
+        // `evolution promote` can legitimately end in a rejection, so the
+        // handler owns its exit code.
+        Command::Evolution { command } => return evolution(command, json).await,
         Command::Runs { command } => match command {
             RunsCommand::List => runs_list(json).await,
             RunsCommand::Show { id } => runs_show(id, json).await,
@@ -686,6 +778,282 @@ async fn experience_list(agent: AgentId, json: bool) -> Result<(), SilynError> {
         &rows,
     );
     Ok(())
+}
+
+/// Dispatches `silyn evolution`.
+///
+/// `promote` returns a rejection decision as exit 5 (a hard gate failure) while
+/// `await_approval` is a successful command with a pending outcome.
+async fn evolution(command: EvolutionCommand, json: bool) -> Result<ExitCode, SilynError> {
+    match command {
+        EvolutionCommand::Init { agent } => {
+            let app = App::open(home_dir()).await?;
+            let record = app.init_policy(agent).await?;
+            print_policy_version(&record, json)?;
+            Ok(ExitCode::SUCCESS)
+        }
+        EvolutionCommand::List { agent } => {
+            let app = App::open(home_dir()).await?;
+            let inventory = app.list_policies(agent).await?;
+            let candidates = app.list_candidates(agent).await?;
+            print_evolution_list(agent, &inventory, &candidates, json)?;
+            Ok(ExitCode::SUCCESS)
+        }
+        EvolutionCommand::Show { id, agent } => {
+            let app = App::open(home_dir()).await?;
+            let detail = app.show_candidate(agent, id).await?;
+            print_candidate_detail(&detail, json)?;
+            Ok(ExitCode::SUCCESS)
+        }
+        EvolutionCommand::Submit { agent, patch } => {
+            let patch = read_patch(&patch)?;
+            let app = App::open(home_dir()).await?;
+            let record = app.submit_candidate(agent, patch).await?;
+            print_candidate_record(&record, json)?;
+            Ok(ExitCode::SUCCESS)
+        }
+        EvolutionCommand::Evaluate {
+            id,
+            agent,
+            report,
+            stats,
+        } => {
+            let app = App::open(home_dir()).await?;
+            let attachment = app
+                .attach_evaluation(agent, id, &report, stats.as_deref())
+                .await?;
+            print_evaluation(&attachment, json)?;
+            Ok(ExitCode::SUCCESS)
+        }
+        EvolutionCommand::Approve {
+            id,
+            agent,
+            operator,
+        } => {
+            let app = App::open(home_dir()).await?;
+            let record = app.approve_candidate(agent, id, &operator).await?;
+            print_candidate_record(&record, json)?;
+            Ok(ExitCode::SUCCESS)
+        }
+        EvolutionCommand::Promote { id, agent } => {
+            let app = App::open(home_dir()).await?;
+            let result = app.promote_candidate(agent, id).await?;
+            print_promotion(&result, json)?;
+            let code = if matches!(result.decision, PromotionDecision::Reject { .. }) {
+                ExitCode::from(EXIT_PERMANENT)
+            } else {
+                ExitCode::SUCCESS
+            };
+            Ok(code)
+        }
+        EvolutionCommand::Rollback { id, agent } => {
+            let app = App::open(home_dir()).await?;
+            let result = app.rollback_promotion(agent, id).await?;
+            print_rollback(&result, json)?;
+            Ok(ExitCode::SUCCESS)
+        }
+    }
+}
+
+/// Reads a `PolicyPatch` from a path, or stdin for `-`.
+fn read_patch(source: &str) -> Result<PolicyPatch, SilynError> {
+    let text = if source == "-" {
+        let mut buffer = String::new();
+        std::io::stdin()
+            .read_to_string(&mut buffer)
+            .map_err(|error| {
+                SilynError::Permanent(format!("cannot read patch from stdin: {error}"))
+            })?;
+        buffer
+    } else {
+        std::fs::read_to_string(source).map_err(|error| {
+            SilynError::Permanent(format!("cannot read patch file {source}: {error}"))
+        })?
+    };
+    serde_json::from_str(&text)
+        .map_err(|error| SilynError::Schema(format!("invalid policy patch: {error}")))
+}
+
+fn print_policy_version(record: &PolicyVersionRecord, json: bool) -> Result<(), SilynError> {
+    if json {
+        return print_json(&serde_json::to_value(record)?);
+    }
+    println!("policy_version: {}", record.id);
+    println!("agent: {}", record.agent_id);
+    println!("checksum: {}", record.checksum);
+    println!("active: true");
+    Ok(())
+}
+
+fn print_evolution_list(
+    agent: AgentId,
+    inventory: &PolicyInventory,
+    candidates: &[CandidateRecord],
+    json: bool,
+) -> Result<(), SilynError> {
+    if json {
+        return print_json(&serde_json::json!({
+            "agent_id": agent,
+            "active_policy": inventory.active,
+            "latest_policy": inventory.latest,
+            "candidates": candidates,
+        }));
+    }
+
+    match &inventory.active {
+        Some(active) => println!("active_policy: {} ({})", active.id, active.checksum),
+        None => println!("active_policy: -"),
+    }
+    match &inventory.latest {
+        Some(latest) => println!("latest_policy: {}", latest.id),
+        None => println!("latest_policy: -"),
+    }
+    println!("candidates: {}", candidates.len());
+
+    let rows: Vec<Vec<String>> = candidates
+        .iter()
+        .map(|candidate| {
+            vec![
+                candidate.id.to_string(),
+                candidate_state_name(candidate.state),
+                risk_name(candidate.risk_class),
+                candidate.created_at.to_rfc3339(),
+            ]
+        })
+        .collect();
+    print_table(&["ID", "STATE", "RISK", "CREATED"], &rows);
+    Ok(())
+}
+
+fn print_candidate_record(record: &CandidateRecord, json: bool) -> Result<(), SilynError> {
+    if json {
+        return print_json(&serde_json::to_value(record)?);
+    }
+    println!("candidate: {}", record.id);
+    println!("state: {}", candidate_state_name(record.state));
+    println!("risk_class: {}", risk_name(record.risk_class));
+    println!("base_policy_version: {}", record.base_policy_version);
+    Ok(())
+}
+
+fn print_candidate_detail(detail: &CandidateDetail, json: bool) -> Result<(), SilynError> {
+    if json {
+        return print_json(&serde_json::to_value(detail)?);
+    }
+
+    print_candidate_record(&detail.candidate, false)?;
+    for evaluation in &detail.evaluations {
+        println!(
+            "evaluation: {} suite={} baseline={} report={}",
+            evaluation.id,
+            evaluation.suite_version,
+            evaluation.baseline_id,
+            evaluation.report_path.as_deref().unwrap_or("-")
+        );
+    }
+    for promotion in &detail.promotions {
+        println!(
+            "promotion: {} approved_by={} from={} to={} rolled_back_at={}",
+            promotion.id,
+            promotion.approved_by,
+            promotion.from_version,
+            promotion.to_version,
+            timestamp(promotion.rolled_back_at)
+        );
+    }
+    for event in &detail.audit {
+        println!(
+            "audit: {} {} {} {}",
+            event.occurred_at.to_rfc3339(),
+            event.action,
+            event.actor,
+            event.decision.as_deref().unwrap_or("-")
+        );
+    }
+    Ok(())
+}
+
+fn print_evaluation(attachment: &EvaluationAttachment, json: bool) -> Result<(), SilynError> {
+    if json {
+        return print_json(&serde_json::to_value(attachment)?);
+    }
+    println!("candidate: {}", attachment.candidate_id);
+    println!("state: {}", candidate_state_name(attachment.state));
+    println!("evaluation: {}", attachment.evaluation_id);
+    println!("report_sha256: {}", attachment.report_sha256);
+    println!("stats_sha256: {}", attachment.stats_sha256);
+    println!("suite_version: {}", attachment.suite_version);
+    println!("verdict: {}", attachment.verdict);
+    println!("gain_pp: {:.2}", attachment.gain_pp);
+    println!("ci_low_pp: {:.2}", attachment.ci_low_pp);
+    println!("unauthorized_actions: {}", attachment.unauthorized_actions);
+    Ok(())
+}
+
+fn print_promotion(result: &PromotionResult, json: bool) -> Result<(), SilynError> {
+    if json {
+        return print_json(&serde_json::to_value(result)?);
+    }
+    println!("decision: {}", decision_name(&result.decision));
+    println!("state: {}", candidate_state_name(result.state));
+    println!(
+        "from_version: {}",
+        result
+            .from_version
+            .map_or_else(|| "-".to_owned(), |value| value.to_string())
+    );
+    println!(
+        "to_version: {}",
+        result
+            .to_version
+            .map_or_else(|| "-".to_owned(), |value| value.to_string())
+    );
+    println!(
+        "promotion: {}",
+        result
+            .promotion
+            .as_ref()
+            .map_or_else(|| "-".to_owned(), |promotion| promotion.id.to_string())
+    );
+    if let PromotionDecision::Reject { reason } = &result.decision {
+        println!("reason: {reason}");
+    }
+    Ok(())
+}
+
+fn print_rollback(result: &RollbackResult, json: bool) -> Result<(), SilynError> {
+    if json {
+        return print_json(&serde_json::to_value(result)?);
+    }
+    println!("promotion: {}", result.promotion_id);
+    println!("from_version: {}", result.from_version);
+    println!("to_version: {}", result.to_version);
+    Ok(())
+}
+
+/// Candidate state names match the JSON wire format (snake_case).
+fn candidate_state_name(state: CandidateState) -> String {
+    serde_json::to_value(state)
+        .ok()
+        .and_then(|value| value.as_str().map(str::to_owned))
+        .unwrap_or_else(|| format!("{state:?}"))
+}
+
+fn risk_name(risk: silyn_app::RiskClass) -> String {
+    match risk {
+        silyn_app::RiskClass::Low => "low",
+        silyn_app::RiskClass::Medium => "medium",
+        silyn_app::RiskClass::High => "high",
+    }
+    .to_owned()
+}
+
+fn decision_name(decision: &PromotionDecision) -> &'static str {
+    match decision {
+        PromotionDecision::Promote => "promote",
+        PromotionDecision::AwaitApproval => "await_approval",
+        PromotionDecision::Reject { .. } => "reject",
+    }
 }
 
 fn print_memory_rows(memories: &[MemoryHitRecord]) {
@@ -1097,6 +1465,26 @@ fn parse_memory_id(value: &str) -> Result<silyn_core::ids::MemoryId, String> {
     value
         .parse()
         .map_err(|error| format!("invalid memory id `{value}`: {error}"))
+}
+
+fn parse_candidate_id(value: &str) -> Result<CandidateId, String> {
+    value
+        .parse()
+        .map_err(|error| format!("invalid candidate id `{value}`: {error}"))
+}
+
+fn parse_promotion_id(value: &str) -> Result<PromotionId, String> {
+    value
+        .parse()
+        .map_err(|error| format!("invalid promotion id `{value}`: {error}"))
+}
+
+fn parse_operator(value: &str) -> Result<String, String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return Err("operator must not be empty".to_owned());
+    }
+    Ok(trimmed.to_owned())
 }
 
 fn parse_memory_text(value: &str) -> Result<String, String> {

@@ -4,12 +4,17 @@
 //! rules live here so both frontends share identical behavior.
 
 mod app;
+mod evolution;
 mod learning;
 mod observability;
 mod runtime_service;
 
 pub use app::{
     App, DEFAULT_CONTEXT_VERSION, DEFAULT_PROFILE_VERSION, InitReport, RECENT_RUNS_LIMIT,
+};
+pub use evolution::{
+    AUDIT_APPROVE, AuditEventRecord, CLI_ACTOR, CandidateDetail, DRILL_ACTOR, EvaluationAttachment,
+    EvaluationSummary, PolicyInventory, PromotionResult, RollbackResult, default_policy,
 };
 pub use learning::failure_code;
 pub use observability::{CancelRequest, RUN_SIGNAL_DIR};
@@ -21,7 +26,8 @@ pub use runtime_service::{
 // directly.
 pub use silyn_core::contracts::MemoryScope;
 pub use silyn_growth::{
-    EvidenceStatus, ExperienceRecord, ExperienceStatus, MemoryHitRecord, MemoryRecord, Provenance,
+    CandidateRecord, EvidenceStatus, ExperienceRecord, ExperienceStatus, MemoryHitRecord,
+    MemoryRecord, PolicyPatch, PolicyVersionRecord, PromotionRecord, Provenance, RiskClass,
 };
 
 // Runtime contracts are re-exported so frontends never depend on `silyn-runtime`
