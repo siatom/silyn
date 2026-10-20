@@ -1,0 +1,60 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: test (windows)
+    # macOS and Linux are part of the cross-platform baseline (ADR 0007) but are
+    # intentionally not wired yet. Add them back to the matrix when the runtime
+    # starts touching platform-specific process and path behavior.
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.99.0"
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Format
+        run: cargo fmt --all --check
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Test
+        run: cargo test --workspace
+
+      - name: Build
+        run: cargo build --workspace --release
+
+      - name: Gate - acceptance registry
+        run: cargo run -p xtask -- verify-acceptance
+
+      - name: Gate - schemas
+        run: cargo run -p xtask -- verify-schemas
+
+      - name: Gate - migrations
+        run: cargo run -p xtask -- verify-migrations
+
+      - name: Gate - architecture
+        run: cargo run -p xtask -- verify-arch
+
+      - name: Gate - eval integrity
+        run: cargo run -p xtask -- verify-eval-integrity
+
+      - name: Smoke - CLI
+        run: cargo run --quiet --release -p silyn-cli -- --version
+
+      - name: Smoke - doctor JSON
+        run: cargo run --quiet --release -p silyn-cli -- --json doctor
