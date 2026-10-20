@@ -1,0 +1,55 @@
+# W5-02 acceptance gates: immutable policy versions, the candidate pipeline and
+# audited promotion/rollback.
+#
+# `cargo run -p xtask -- verify-acceptance` resolves every entry against the
+# real test source. Removing or renaming a test requires an integrator commit.
+
+[[gate]]
+id = "policy.canonical_checksum_is_stable"
+test = "crates/silyn-growth/tests/evolution.rs::canonical_checksum_is_stable"
+required = true
+
+[[gate]]
+id = "policy.version_is_immutable"
+test = "crates/silyn-growth/tests/evolution.rs::version_is_immutable"
+required = true
+
+[[gate]]
+id = "candidate.path_whitelist_rejects_tools"
+test = "crates/silyn-growth/tests/evolution.rs::path_whitelist_rejects_tools"
+required = true
+
+[[gate]]
+id = "candidate.bounds_rejected"
+test = "crates/silyn-growth/tests/evolution.rs::bounds_rejected"
+required = true
+
+[[gate]]
+id = "candidate.evidence_must_exist"
+test = "crates/silyn-growth/tests/evolution.rs::evidence_must_exist"
+required = true
+
+[[gate]]
+id = "candidate.state_machine_enforced"
+test = "crates/silyn-growth/tests/evolution.rs::state_machine_enforced"
+required = true
+
+[[gate]]
+id = "promotion.low_risk_auto_promotes"
+test = "crates/silyn-growth/tests/evolution.rs::low_risk_auto_promotes"
+required = true
+
+[[gate]]
+id = "promotion.default_is_deny"
+test = "crates/silyn-growth/tests/evolution.rs::default_is_deny"
+required = true
+
+[[gate]]
+id = "promotion.rollback_restores_previous"
+test = "crates/silyn-growth/tests/evolution.rs::rollback_restores_previous"
+required = true
+
+[[gate]]
+id = "promotion.audit_chain_complete"
+test = "crates/silyn-growth/tests/evolution.rs::audit_chain_complete"
+required = true
