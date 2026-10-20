@@ -1,0 +1,29 @@
+# W2-04 evaluation harness gates.
+#
+# `cargo run -p xtask -- verify-acceptance` resolves every entry against the
+# real test source. Removing or renaming a test requires an integrator commit.
+
+[[gate]]
+id = "eval.oracle_matches_generator_metadata"
+test = "crates/silyn-eval/tests/generator.rs::oracle_matches_generator_metadata"
+required = true
+
+[[gate]]
+id = "eval.split_hashes_are_stable"
+test = "crates/silyn-eval/tests/generator.rs::split_hashes_are_stable"
+required = true
+
+[[gate]]
+id = "eval.test_split_not_exposed"
+test = "crates/silyn-eval/tests/sealed.rs::test_split_is_only_reachable_through_the_sealed_set"
+required = true
+
+[[gate]]
+id = "eval.report_matches_contract"
+test = "crates/silyn-eval/tests/report.rs::report_matches_eval_report_contract"
+required = true
+
+[[gate]]
+id = "eval.suite_lock_detects_tampering"
+test = "crates/silyn-eval/tests/integrity.rs::changed_artifact_fails_integrity_check"
+required = true

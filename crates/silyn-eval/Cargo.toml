@@ -1,0 +1,30 @@
+[package]
+name = "silyn-eval"
+description = "Evaluation harness for Silyn: synthetic CSV tasks, oracle scoring and reports"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+name = "silyn_eval"
+path = "src/lib.rs"
+
+[[bin]]
+name = "silyn-eval"
+path = "src/bin/silyn_eval.rs"
+
+[dependencies]
+chrono.workspace = true
+clap.workspace = true
+csv = "1"
+silyn-core = { path = "../silyn-core" }
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+toml.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

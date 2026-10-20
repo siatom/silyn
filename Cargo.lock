@@ -1614,6 +1614,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "silyn-eval"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "clap",
+ "csv",
+ "serde",
+ "serde_json",
+ "sha2",
+ "silyn-core",
+ "tempfile",
+ "toml",
+ "uuid",
+]
+
+[[package]]
 name = "silyn-growth"
 version = "0.1.0"
 dependencies = [
