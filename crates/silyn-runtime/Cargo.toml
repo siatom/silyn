@@ -19,8 +19,10 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }
 tokio = { workspace = true, features = ["rt", "time", "sync"] }
+tracing = "0.1"
 
 [dev-dependencies]
 sqlx = { workspace = true }
 tempfile = { workspace = true }
 tokio = { workspace = true }
+tracing-subscriber = "0.3"

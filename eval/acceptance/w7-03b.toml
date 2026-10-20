@@ -1,0 +1,49 @@
+# W7-03b acceptance gates: tracing span names, redaction and the run id field.
+#
+# `cargo run -p xtask -- verify-acceptance` resolves every entry against the
+# real test source. Removing or renaming a test requires an integrator commit.
+
+[[gate]]
+id = "telemetry.span_names"
+test = "crates/silyn-runtime/src/telemetry.rs::span_names_and_fields_match_observability_doc"
+required = true
+
+[[gate]]
+id = "telemetry.no_prompt_fields"
+test = "crates/silyn-runtime/src/telemetry.rs::field_constants_hide_sensitive_words"
+required = true
+
+[[gate]]
+id = "telemetry.redacts_secret_shapes"
+test = "crates/silyn-runtime/src/telemetry.rs::secret_shapes_are_redacted"
+required = true
+
+[[gate]]
+id = "telemetry.utf8_truncation"
+test = "crates/silyn-runtime/src/telemetry.rs::truncation_is_utf8_safe"
+required = true
+
+[[gate]]
+id = "telemetry.error_class"
+test = "crates/silyn-runtime/src/telemetry.rs::error_classes_match_the_contract"
+required = true
+
+[[gate]]
+id = "telemetry.run_id_recorded"
+test = "crates/silyn-runtime/tests/telemetry.rs::run_records_run_id_and_terminal_status"
+required = true
+
+[[gate]]
+id = "telemetry.canary"
+test = "crates/silyn-runtime/tests/telemetry.rs::prompt_tool_and_secret_canaries_never_reach_spans"
+required = true
+
+[[gate]]
+id = "telemetry.declared_fields"
+test = "crates/silyn-runtime/tests/telemetry.rs::emitted_spans_declare_only_contract_fields"
+required = true
+
+[[gate]]
+id = "telemetry.no_subscriber"
+test = "crates/silyn-runtime/tests/telemetry.rs::no_subscriber_keeps_the_run_behaviour"
+required = true

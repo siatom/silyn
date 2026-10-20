@@ -10,6 +10,7 @@ pub mod detect;
 pub mod retry;
 pub mod run;
 pub mod state;
+pub mod telemetry;
 pub mod tools;
 
 pub use budget::{BudgetError, BudgetSpec, BudgetTracker};
@@ -21,4 +22,7 @@ pub use control::{RunControl, cancel_file_path};
 pub use detect::{LoopDetector, fingerprint_tool_call};
 pub use retry::RetryPolicy;
 pub use run::{RunOptions, RunOutcome, Runtime};
+pub use telemetry::{
+    SPAN_CHECKPOINT, SPAN_MODEL, SPAN_NAMES, SPAN_RUN, SPAN_STEP, SPAN_TOOL, SPAN_VERIFY, redact,
+};
 pub use tools::{AuditEvent, AuditSink, MemoryAuditSink, ToolBroker};
