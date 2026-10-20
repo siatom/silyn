@@ -1,0 +1,15 @@
+{
+  "memory": [
+    "Check for duplicate rows before counting.",
+    "Check for missing values before counting.",
+    "Check units before computing aggregates."
+  ],
+  "policy": [
+    "Inspect the header and a few sample rows before computing; count distinct data rows and report the unit declared in the header."
+  ],
+  "provenance": {
+    "memory_source": "silyn-memory:01a15ad5-e1ef-713c-a550-dc1a27381246",
+    "policy_version": "01a15ad5-f106-7190-8ebd-7df926d24f04",
+    "notes": "W6 dev candidate 73b53360-af56-4f75-a416-42c50b55e875"
+  }
+}

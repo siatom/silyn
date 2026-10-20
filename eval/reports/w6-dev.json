@@ -1,0 +1,42 @@
+{
+  "schema_version": 1,
+  "candidate_id": "73b53360-af56-4f75-a416-42c50b55e875",
+  "suite_version": "csv-stats-v1.1",
+  "model_id": "deepseek-chat",
+  "model_reported": "deepseek-flash",
+  "baseline_id": "model.openai-compatible.v1:deepseek-chat",
+  "repeats": 1,
+  "arms": {
+    "A": {
+      "successes": 6,
+      "total": 10,
+      "cost_usd": 0.0,
+      "latency_p50_ms": 728.333,
+      "latency_p95_ms": 919.5297,
+      "tool_errors": 0
+    },
+    "B": {
+      "successes": 7,
+      "total": 10,
+      "cost_usd": 0.0,
+      "latency_p50_ms": 719.185,
+      "latency_p95_ms": 931.1576,
+      "tool_errors": 0
+    },
+    "C": {
+      "successes": 6,
+      "total": 10,
+      "cost_usd": 0.0,
+      "latency_p50_ms": 687.9741,
+      "latency_p95_ms": 1092.3571000000002,
+      "tool_errors": 0
+    }
+  },
+  "thresholds": {
+    "min_gain_pp": 10.0,
+    "max_cost_ratio": 2.0,
+    "max_regression_pp": 5.0
+  },
+  "verdict": "reject",
+  "created_at": "2026-10-20T19:43:12.257771500Z"
+}

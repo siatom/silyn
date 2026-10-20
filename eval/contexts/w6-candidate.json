@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "candidate_id": "73b53360-af56-4f75-a416-42c50b55e875",
+  "base_policy_version": "01a15ad5-f106-7190-8ebd-7df926d24f04",
+  "hypothesis": "Explicitly checking header units, missing values and duplicate rows improves CSV statistics accuracy.",
+  "evidence_run_ids": [
+    "01a15ad5-edf9-72f9-935a-f5d5325122a9"
+  ],
+  "expected_gain": {
+    "metric": "success_rate",
+    "delta_pp": 10.0
+  },
+  "risk_class": "low",
+  "operations": [
+    {
+      "op": "replace",
+      "path": "/planner/prompt_fragments",
+      "value": [
+        "Inspect the header and a few sample rows before computing; count distinct data rows and report the unit declared in the header."
+      ]
+    }
+  ]
+}

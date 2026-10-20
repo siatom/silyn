@@ -1,0 +1,155 @@
+{
+  "schema_version": 1,
+  "suite_version": "csv-stats-v1.1",
+  "split": "dev",
+  "sealed": false,
+  "repeats": 1,
+  "seed": 6840123409045659686,
+  "model_id": "deepseek-chat",
+  "baseline_id": "model.openai-compatible.v1:deepseek-chat",
+  "backend": "in_process",
+  "bootstrap": {
+    "resamples": 1000,
+    "confidence_pct": 95.0,
+    "seed": 6840316953156911105
+  },
+  "thresholds": {
+    "min_gain_pp": 10.0,
+    "max_cost_ratio": 2.0,
+    "max_regression_pp": 5.0,
+    "max_cost_usd": 1.0
+  },
+  "suite_digests": {
+    "train": "798711e9e2fe9c40aaae3a68b8a7751d5e0e2f7c98daa41e344253013531ead8",
+    "dev": "f4abda23f50c22e75f8577ced0d66bc8364dddfd17f3d15738ef8f4a9f497f13",
+    "test": "960ccb10f1d4acee7cae85548818a0e1ca52fec62d907978736c0c47907eb040"
+  },
+  "arms": {
+    "A": {
+      "label": "no-memory-baseline",
+      "solver": "model.openai-compatible.v1",
+      "model_id": "deepseek-chat",
+      "memory": false,
+      "evolution": false,
+      "cost_usd_per_call": 0.0,
+      "budget": {
+        "timeout_ms": 600000,
+        "max_steps": 8,
+        "max_cost_usd": 1.0
+      },
+      "price_configured": false,
+      "successes": 6,
+      "total": 10,
+      "success_rate_pp": 60.0,
+      "cost_usd": 0.0,
+      "duration_ms": 7154.194,
+      "latency_p50_ms": 728.333,
+      "latency_p95_ms": 919.5297,
+      "tool_errors": 0,
+      "unauthorized_actions": 0
+    },
+    "B": {
+      "label": "memory-only",
+      "solver": "model.openai-compatible.v1",
+      "model_id": "deepseek-chat",
+      "memory": true,
+      "evolution": false,
+      "cost_usd_per_call": 0.0,
+      "budget": {
+        "timeout_ms": 600000,
+        "max_steps": 8,
+        "max_cost_usd": 1.0
+      },
+      "context": {
+        "sha256": "18406da08a039a40113c5599d2404aaaf66cab8a58db7b173e81a3f05decedcf",
+        "source_sha256": "f48c9a948f110e2f836ec2f1f7e14fc5b273a0c3a75dd7e22564322202f2db63",
+        "memory_entries": 3,
+        "policy_entries": 0,
+        "provenance": {
+          "memory_source": "silyn-memory:01a15ad5-e1ef-713c-a550-dc1a27381246",
+          "policy_version": "01a15ad5-f106-7190-8ebd-7df926d24f04",
+          "notes": "W6 dev candidate 73b53360-af56-4f75-a416-42c50b55e875"
+        }
+      },
+      "price_configured": false,
+      "successes": 7,
+      "total": 10,
+      "success_rate_pp": 70.0,
+      "cost_usd": 0.0,
+      "duration_ms": 7398.632600000002,
+      "latency_p50_ms": 719.185,
+      "latency_p95_ms": 931.1576,
+      "tool_errors": 0,
+      "unauthorized_actions": 0
+    },
+    "C": {
+      "label": "memory-and-promoted-policy",
+      "solver": "model.openai-compatible.v1",
+      "model_id": "deepseek-chat",
+      "memory": true,
+      "evolution": true,
+      "cost_usd_per_call": 0.0,
+      "budget": {
+        "timeout_ms": 600000,
+        "max_steps": 8,
+        "max_cost_usd": 1.0
+      },
+      "context": {
+        "sha256": "97a1dc3b92ae5509132d9a6aa4d62d5575d9d7512a377ac7bc165f265d5d2630",
+        "source_sha256": "f48c9a948f110e2f836ec2f1f7e14fc5b273a0c3a75dd7e22564322202f2db63",
+        "memory_entries": 3,
+        "policy_entries": 1,
+        "provenance": {
+          "memory_source": "silyn-memory:01a15ad5-e1ef-713c-a550-dc1a27381246",
+          "policy_version": "01a15ad5-f106-7190-8ebd-7df926d24f04",
+          "notes": "W6 dev candidate 73b53360-af56-4f75-a416-42c50b55e875"
+        }
+      },
+      "price_configured": false,
+      "successes": 6,
+      "total": 10,
+      "success_rate_pp": 60.0,
+      "cost_usd": 0.0,
+      "duration_ms": 7204.749400000001,
+      "latency_p50_ms": 687.9741,
+      "latency_p95_ms": 1092.3571000000002,
+      "tool_errors": 0,
+      "unauthorized_actions": 0
+    }
+  },
+  "comparisons": {
+    "b_minus_a": {
+      "comparison": "B-A",
+      "point_pp": 10.0,
+      "ci_low_pp": 0.0,
+      "ci_high_pp": 30.0,
+      "paired_tasks": 10,
+      "resamples": 1000,
+      "confidence_pct": 95.0,
+      "seed": 6840316953156911105
+    },
+    "c_minus_b": {
+      "comparison": "C-B",
+      "point_pp": -10.0,
+      "ci_low_pp": -30.0,
+      "ci_high_pp": 0.0,
+      "paired_tasks": 10,
+      "resamples": 1000,
+      "confidence_pct": 95.0,
+      "seed": 6840316953156911105
+    },
+    "c_minus_a": {
+      "comparison": "C-A",
+      "point_pp": 0.0,
+      "ci_low_pp": 0.0,
+      "ci_high_pp": 0.0,
+      "paired_tasks": 10,
+      "resamples": 1000,
+      "confidence_pct": 95.0,
+      "seed": 6840316953156911105
+    }
+  },
+  "verdict": "reject",
+  "verdict_reason": "the policy arm regresses against the memory arm",
+  "unauthorized_actions": 0
+}
