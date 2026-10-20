@@ -5,6 +5,9 @@ Synthetic CSV analysis suite for the MVP evaluation protocol
 `crates/silyn-eval/src/generator.rs`; there are no checked-in fixtures because
 every task is reproducible from its seed.
 
+Suite version: `csv-stats-v1.1` (sealed). The suite is frozen by `suite.lock`;
+changing any sealed artifact requires a new suite version.
+
 ## Task
 
 Each task is a small CSV file plus a fixed objective. A solver returns JSON:
@@ -20,8 +23,7 @@ Each task is a small CSV file plus a fixed objective. A solver returns JSON:
 - `unit` — the actual unit of the mass column. The header is deliberately not
   authoritative: a task may claim `mass_lb` for values that are kilograms.
 
-Scoring is exact: all four fields must match the oracle. Partial credit and
-confidence intervals are W5 work.
+Scoring is exact: all four fields must match the oracle.
 
 ## Controlled traps
 
@@ -53,32 +55,54 @@ is the hand-checked fixture used by the test suite.
 
 | split | tasks | use |
 |---|---|---|
-| train | 20 | experience accumulation (W5) |
+| train | 20 | experience accumulation |
 | dev | 10 | candidate selection |
-| test | 10 | sealed; only `SealedTestSet::evaluate` |
+| test | 10 | sealed; only `SealedTestSet` |
 
 Seeds are fixed per split and recorded in `suite.toml` as sha256 digests over
-task ids, inputs and oracles. The test split is generated on demand inside the
-sealed module; `generate_split(Split::Test)` and
-`Evaluator::run_arm(.., Split::Test)` return `PolicyDenied`.
+task ids, inputs and oracles. `silyn-eval hashes` prints the computed digests and
+fails when the manifest is stale.
+
+## Runner
+
+`silyn-eval run` executes one or all arms through an isolated worker:
+
+```bash
+silyn-eval run --suite csv-stats-v1 --split dev --arm all --repeats 1 \
+  --out report.json --markdown report.md
+```
+
+- The default backend re-executes `silyn-eval worker` per task with a cleared
+  environment, a fresh temporary working directory and a wall-clock timeout. A
+  timeout, non-zero exit, panic or non-JSON stdout is a task failure, never a
+  harness crash.
+- `--arm a|b|c|all` selects arms; only `all` writes a report.
+- `--repeats` stays within 1–5 and the seed is recorded in the statistics
+  document.
+- `--out` is the schema-valid `EvaluationReport` v1. Seeds, budgets, durations
+  and the paired bootstrap intervals that schema v1 has no fields for are written
+  to `<out>.stats.json` (override with `--stats-out`).
+
+The test split is refused unless the suite declares `sealed = true` **and** the
+operator passes `--allow-sealed`; the runner then verifies `suite.lock` before
+loading the sealed tasks.
 
 ## Sealing
 
 `suite.lock` lists the sha256 of `suite.toml` and `README.md` only; fixtures are
 reproducible from the generator and are not sealed directly. Any change to a
-listed file fails `cargo run -p xtask -- verify-eval-integrity`. Regenerate the
-digests with `cargo run -p silyn-eval -- hashes` when preparing a **new** suite
-version, never in place.
+listed file fails `cargo run -p xtask -- verify-eval-integrity` and a sealed run,
+until a new suite version is created. Regenerate the digests with
+`cargo run -p silyn-eval -- hashes` when preparing a **new** suite version,
+never in place.
 
-`sealed = false` until W5. The test split still cannot be read by candidates;
-the flag records that the formal sealed run and its report are pending.
+## Arms
 
-## Arm A baseline
+All three arms run the same solver, model, task order, budget and price; only
+the recorded capability flags differ (A: none, B: memory, C: memory plus the
+promoted policy). In W5 the baseline solver is used for all three, so the honest
+verdict is `reject` until W6 supplies real memory and policy arms.
 
-`silyn-eval run` uses `BaselineSolver`, a memory-free solver that counts rows,
-duplicates and empty cells mechanically but trusts the header for the unit. It
-therefore fails every unit-mismatch task (~half the split) and never fabricates
-a success: parse errors are returned as errors. W2 runs arms A, B and C with
-this same solver because memory and evolution land in W5, so the honest verdict
-is `reject` (no measurable gain). `ArmOutcome` also keeps per-task success
-counts for diagnostics; report v1 only carries the aggregates.
+`BaselineSolver` counts rows, duplicates and empty cells mechanically but trusts
+the header for the unit. It therefore fails every unit-mismatch task (~half the
+split) and never fabricates a success: parse errors are returned as errors.

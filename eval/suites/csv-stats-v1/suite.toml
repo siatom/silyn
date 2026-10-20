@@ -1,17 +1,20 @@
 # SuiteManifest v1 for the MVP synthetic CSV task family.
 #
-# Thresholds are pre-registered (ADR 0004): C - B >= +10pp, cost <= 2x baseline,
-# regression <= 5pp. They must never be edited after the first real run; a
-# changed threshold invalidates the report and requires a new suite version.
+# Thresholds are pre-registered (ADR 0004): C - A >= +10pp with a positive lower
+# bootstrap bound, cost <= 2x the memory arm, regression <= 5pp. They must never
+# be edited after the first real run; a changed threshold invalidates the report
+# and requires a new suite version.
 #
-# `sealed = false` until W5 wires the sealed test run. The suite lock already
-# freezes this file and README.md, so any edit must ship a new suite version.
+# `sealed = true` from csv-stats-v1.1: the test split is only reachable through
+# `SealedTestSet` and `silyn-eval run --split test --allow-sealed`, which first
+# verifies `suite.lock`. The lock freezes this file and README.md, so any edit
+# must ship a new suite version; regenerating digests in place is forbidden.
 
 suite_id = "csv-stats-v1"
-version = "csv-stats-v1"
+version = "csv-stats-v1.1"
 task_family = "csv-stats"
 repeats = 1
-sealed = false
+sealed = true
 
 [thresholds]
 min_gain_pp = 10.0

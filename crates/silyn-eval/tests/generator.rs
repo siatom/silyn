@@ -163,6 +163,40 @@ fn split_hashes_are_stable() {
 }
 
 #[test]
+fn same_seed_produces_byte_identical_split() {
+    // Two independent generations must agree byte for byte: CSV text, oracles and
+    // the canonical split digest. This is what makes the sealed hashes meaningful.
+    for split in Split::ALL {
+        let first = split_sha256(split).expect("first digest");
+        let second = split_sha256(split).expect("second digest");
+        assert_eq!(first, second, "{split} digest is not deterministic");
+    }
+
+    for split in [Split::Train, Split::Dev] {
+        let first = generate_split(split).expect("first split");
+        let second = generate_split(split).expect("second split");
+        assert_eq!(first.len(), second.len());
+        for (left, right) in first.iter().zip(second.iter()) {
+            assert_eq!(left.metadata, right.metadata, "{split} metadata drift");
+            assert_eq!(
+                left.input.csv.as_bytes(),
+                right.input.csv.as_bytes(),
+                "{} CSV is not byte-identical",
+                left.metadata.task_id
+            );
+            assert_eq!(left.input.objective, right.input.objective);
+        }
+    }
+
+    // The sealed test split is generated through the sealed path only, and it is
+    // byte-stable as well.
+    let sealed = silyn_eval::SealedTestSet::load_default();
+    assert_eq!(sealed.len(), Split::Test.count() as usize);
+    let reparsed = silyn_eval::SealedTestSet::load_default();
+    assert_eq!(sealed.digest(), reparsed.digest());
+}
+
+#[test]
 fn tasks_differ_across_splits() {
     let train = generate_split(Split::Train).expect("train split");
     let dev = generate_split(Split::Dev).expect("dev split");

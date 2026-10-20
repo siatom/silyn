@@ -12,6 +12,7 @@
 use sha2::{Digest, Sha256};
 use silyn_core::SilynError;
 
+use crate::rng::SplitMix64;
 use crate::task::{Oracle, Split, Task, TaskInput, TaskMetadata, TrapFlags, Unit};
 
 /// Suite id shared with `eval/suites/csv-stats-v1/suite.toml`.
@@ -389,39 +390,4 @@ fn escape_field(value: &str) -> String {
 
 fn round1(value: f64) -> f64 {
     (value * 10.0).round() / 10.0
-}
-
-/// SplitMix64: small, seedable and platform-independent.
-struct SplitMix64 {
-    state: u64,
-}
-
-impl SplitMix64 {
-    fn new(seed: u64) -> Self {
-        Self { state: seed }
-    }
-
-    fn next_u64(&mut self) -> u64 {
-        self.state = self.state.wrapping_add(0x9E37_79B9_7F4A_7C15);
-        let mut value = self.state;
-        value = (value ^ (value >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
-        value = (value ^ (value >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
-        value ^ (value >> 31)
-    }
-
-    fn below(&mut self, bound: u64) -> u64 {
-        debug_assert!(bound > 0);
-        self.next_u64() % bound
-    }
-
-    fn pick<T: Copy>(&mut self, values: &[T]) -> T {
-        values[self.below(values.len() as u64) as usize]
-    }
-
-    fn shuffle<T>(&mut self, values: &mut [T]) {
-        for index in (1..values.len()).rev() {
-            let other = self.below(index as u64 + 1) as usize;
-            values.swap(index, other);
-        }
-    }
 }
