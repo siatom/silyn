@@ -1634,10 +1634,14 @@ dependencies = [
 name = "silyn-growth"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "serde",
  "serde_json",
+ "sha2",
  "silyn-core",
  "silyn-storage",
+ "sqlx",
+ "tokio",
 ]
 
 [[package]]
