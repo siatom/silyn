@@ -1,0 +1,80 @@
+# W7-02a acceptance gates: run/experiment reports, the JSON read surface and
+# report exit codes.
+#
+# `cargo run -p xtask -- verify-acceptance` resolves every entry against the
+# real test source. Removing or renaming a test requires an integrator commit.
+
+[[gate]]
+id = "cli.report_run_json"
+test = "crates/silyn-cli/tests/report.rs::report_run_json_contains_run_record_and_events"
+required = true
+
+[[gate]]
+id = "cli.report_run_markdown"
+test = "crates/silyn-cli/tests/report.rs::report_run_markdown_mirrors_json"
+required = true
+
+[[gate]]
+id = "cli.report_run_failure"
+test = "crates/silyn-cli/tests/report.rs::report_run_records_the_failure_reason"
+required = true
+
+[[gate]]
+id = "cli.report_run_out"
+test = "crates/silyn-cli/tests/report.rs::report_run_out_writes_the_payload"
+required = true
+
+[[gate]]
+id = "cli.report_run_unknown"
+test = "crates/silyn-cli/tests/report.rs::report_run_unknown_run_exits_five"
+required = true
+
+[[gate]]
+id = "cli.report_experiment_json"
+test = "crates/silyn-cli/tests/report.rs::report_experiment_json_reads_w6_reports"
+required = true
+
+[[gate]]
+id = "cli.report_experiment_explicit_stats"
+test = "crates/silyn-cli/tests/report.rs::report_experiment_honours_an_explicit_stats_file"
+required = true
+
+[[gate]]
+id = "cli.report_experiment_report_only"
+test = "crates/silyn-cli/tests/report.rs::report_experiment_without_stats_uses_the_report_only"
+required = true
+
+[[gate]]
+id = "cli.report_experiment_markdown"
+test = "crates/silyn-cli/tests/report.rs::report_experiment_markdown_mirrors_json"
+required = true
+
+[[gate]]
+id = "cli.report_experiment_unknown"
+test = "crates/silyn-cli/tests/report.rs::report_experiment_unknown_path_exits_five"
+required = true
+
+[[gate]]
+id = "cli.report_experiment_suite_mismatch"
+test = "crates/silyn-cli/tests/report.rs::report_experiment_rejects_mismatched_suite_versions"
+required = true
+
+[[gate]]
+id = "cli.report_no_secrets"
+test = "crates/silyn-cli/tests/report.rs::report_output_never_contains_secrets"
+required = true
+
+[[gate]]
+id = "cli.report_usage_errors"
+test = "crates/silyn-cli/tests/report.rs::report_usage_errors_exit_two"
+required = true
+
+[[gate]]
+id = "cli.json_surface_every_read_command"
+test = "crates/silyn-cli/tests/json_surface.rs::every_read_command_emits_json"
+required = true
+
+[[gate]]
+id = "cli.json_surface_error_envelope"
+test = "crates/silyn-cli/tests/json_surface.rs::read_command_errors_are_json_on_stderr"
+required = true
