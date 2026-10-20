@@ -99,6 +99,36 @@ id = "storage.checkpoint_integrity"
 test = "crates/silyn-storage/tests/journal.rs::checkpoint_integrity"
 required = true
 
+[[gate]]
+id = "llm.openai_compatible_request_shape"
+test = "crates/silyn-llm/tests/llm.rs::request_shape_matches_openai_protocol"
+required = true
+
+[[gate]]
+id = "llm.rate_limit_is_retried"
+test = "crates/silyn-llm/tests/llm.rs::rate_limit_is_retried"
+required = true
+
+[[gate]]
+id = "llm.bad_request_is_not_retried"
+test = "crates/silyn-llm/tests/llm.rs::bad_request_is_not_retried"
+required = true
+
+[[gate]]
+id = "llm.structured_output_repairs_once"
+test = "crates/silyn-llm/tests/llm.rs::structured_output_repairs_once"
+required = true
+
+[[gate]]
+id = "llm.cassette_replays_offline"
+test = "crates/silyn-llm/tests/llm.rs::cassette_replays_by_prompt"
+required = true
+
+[[gate]]
+id = "llm.mock_provider_offline"
+test = "crates/silyn-llm/tests/llm.rs::mock_provider_is_offline"
+required = true
+
 # Contract tests stay ignored until their subsystem lands. They are tracked from
 # W0 so the registry cannot silently lose them.
 [[gate]]
