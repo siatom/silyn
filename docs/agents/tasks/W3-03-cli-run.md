@@ -11,6 +11,8 @@ owns:
   - crates/silyn-cli/src/main.rs
   - crates/silyn-cli/tests/run.rs
   - crates/silyn-cli/Cargo.toml
+  - crates/silyn-runtime/src/run.rs
+  - crates/silyn-runtime/src/lib.rs
   - eval/acceptance/w3-03.toml
   - docs/gates/w3-03.md
 reads:
@@ -23,10 +25,14 @@ forbids:
   - migrations/**
   - eval/suites/**
   - crates/silyn-core/**
-  - crates/silyn-runtime/**
   - docs/architecture/**
   - Cargo.toml
 contracts: [RunOptions v1, RunOutcome v1, CLI run surface v1]
+notes:
+  - `crates/silyn-runtime/**` is touched only to add `Runtime::create_run` (so the
+    app can know the run id before execution and pass the cancel-file path) and
+    to derive `Serialize` for `RunOutcome`. Do not change loop/budget/ledger
+    semantics.
 acceptance_registry:
   - cli.run_completes_offline
   - cli.run_creates_run_and_events
@@ -34,8 +40,8 @@ acceptance_registry:
   - cli.resume_unknown_run_exits_five
   - cli.run_cancel_request_path
 commands:
-  - cargo test -p silyn-cli -p silyn-app
-  - cargo clippy -p silyn-cli -p silyn-app --all-targets -- -D warnings
+  - cargo test -p silyn-cli -p silyn-app -p silyn-runtime
+  - cargo clippy -p silyn-cli -p silyn-app -p silyn-runtime --all-targets -- -D warnings
   - cargo run -p xtask -- verify-acceptance
 ```
 
