@@ -1,0 +1,24 @@
+# W7-02b acceptance gates: silyn serve.
+#
+# These tests start the real CLI on an ephemeral loopback port. They use no
+# network and no developer .env.
+
+[[gate]]
+id = "cli.serve_health"
+test = "crates/silyn-cli/tests/serve.rs::serve_health_is_public"
+required = true
+
+[[gate]]
+id = "cli.serve_auth_env"
+test = "crates/silyn-cli/tests/serve.rs::serve_token_protects_v1_but_not_health"
+required = true
+
+[[gate]]
+id = "cli.serve_loopback_default"
+test = "crates/silyn-cli/tests/serve.rs::serve_rejects_non_loopback_by_default"
+required = true
+
+[[gate]]
+id = "cli.serve_json_announcement"
+test = "crates/silyn-cli/tests/serve.rs::serve_json_announces_token_requirement"
+required = true

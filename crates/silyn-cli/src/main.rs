@@ -15,9 +15,11 @@
 
 use std::collections::HashSet;
 use std::env;
-use std::io::Read as _;
+use std::io::{Read as _, Write as _};
+use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use std::sync::Arc;
 use std::time::Duration;
 
 use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
@@ -104,6 +106,15 @@ enum Command {
     },
     /// Execute a task, or resume an existing run, through the runtime loop.
     Run(RunArgs),
+    /// Serve the local HTTP API until Ctrl-C.
+    Serve {
+        /// Bind address; defaults to SILYN_API_ADDR or 127.0.0.1:7788.
+        #[arg(long)]
+        addr: Option<String>,
+        /// Environment variable holding the bearer token.
+        #[arg(long, default_value = "SILYN_API_TOKEN")]
+        token_env: String,
+    },
     /// Print build, platform and configuration diagnostics.
     Doctor,
     /// Print resolved non-secret configuration.
@@ -519,6 +530,7 @@ async fn dispatch(command: Command, json: bool) -> Result<ExitCode, SilynError> 
         Command::Report { command } => report_command(command, json).await,
         // `run` maps the run outcome to a stable exit code, so it owns the code.
         Command::Run(args) => return run(args, json).await,
+        Command::Serve { addr, token_env } => return serve(addr, &token_env, json).await,
         Command::Doctor => doctor(json),
         Command::Config => config(json),
     };
@@ -572,6 +584,37 @@ fn class_name(class: ErrorClass) -> &'static str {
 
 fn home_dir() -> PathBuf {
     env::var("SILYN_HOME").map_or_else(|_| PathBuf::from(".silyn"), PathBuf::from)
+}
+
+/// Serves the local HTTP API. The listener is bound before the JSON line is
+/// printed, so a test or desktop shell can read the effective address.
+async fn serve(addr: Option<String>, token_env: &str, json: bool) -> Result<ExitCode, SilynError> {
+    let raw = addr
+        .or_else(|| env::var("SILYN_API_ADDR").ok())
+        .unwrap_or_else(|| "127.0.0.1:7788".to_owned());
+    let addr: SocketAddr = raw
+        .parse()
+        .map_err(|error| SilynError::Permanent(format!("invalid API address `{raw}`: {error}")))?;
+    let token = env::var(token_env)
+        .ok()
+        .filter(|value| !value.trim().is_empty());
+    let app = Arc::new(App::open(home_dir()).await?);
+
+    if json {
+        println!(
+            "{}",
+            serde_json::json!({
+                "addr": addr.to_string(),
+                "token_required": token.is_some(),
+            })
+        );
+        std::io::stdout().flush().map_err(|error| {
+            SilynError::Storage(format!("cannot flush serve announcement: {error}"))
+        })?;
+    }
+
+    silyn_api::serve(app, addr, token).await?;
+    Ok(ExitCode::SUCCESS)
 }
 
 struct ResolvedConfig {

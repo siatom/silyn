@@ -1,6 +1,6 @@
 # Silyn CLI
 
-- Status: W7-02a (reporting and JSON surface); `serve` is W7-02b
+- Status: W7-02b (reporting, JSON surface and local API serve)
 - Date: 2026-10-21
 - Contract: CLI surface v1, exit codes v1, JSON envelope v1
 
@@ -43,7 +43,7 @@ Every command accepts the global `--json` flag, before or after the subcommand.
 | `silyn evolution rollback <promotion-id> --agent <id>` | write | `RollbackResult` | Restores the replaced version |
 | `silyn report run <run-id>` | read | `run_report` bundle | See below |
 | `silyn report experiment <report.json>` | read | `experiment_report` bundle | See below |
-| `silyn serve` | — | — | W7-02b, not shipped yet; currently a usage error |
+| `silyn serve [--addr <host:port>] [--token-env <name>]` | serve | `{addr, token_required}` with `--json` | Local HTTP/SSE API; Ctrl-C shuts down |
 
 `--json` is a single document on stdout. Human mode is a table or `key: value`
 lines; long values are printed in full rather than truncated, so a script should
@@ -263,10 +263,12 @@ credentials, and a key-shaped string never reaches stdout or stderr. See
 [security](../security.md) for the trust boundaries and
 [operations](../operations.md) for recovery procedures.
 
-## Deferred to W7-02b
+## Local API
 
-`silyn serve` will start the local HTTP API from `silyn-api`, print the bound
-address unless `--json` and handle Ctrl-C gracefully. The command is deliberately
-absent from this wave so the CLI and the API lands against a shared `silyn-app`
-contract; until then `silyn serve` is an unknown command and exits 2. The
-command table above marks it accordingly.
+`silyn serve` starts the `silyn-api` router on `SILYN_API_ADDR` (default
+`127.0.0.1:7788`) and shuts down gracefully on Ctrl-C. `--json` prints
+`{"addr": "...", "token_required": true|false}` before serving. Non-loopback
+addresses are refused unless `SILYN_API_ALLOW_NON_LOOPBACK=1`. The optional
+bearer token is read from `SILYN_API_TOKEN` or the variable named by
+`--token-env`; `/health` stays public. See
+[security](../security.md) and the W7-01 gate for the HTTP contract.
