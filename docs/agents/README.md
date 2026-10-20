@@ -64,6 +64,7 @@ cargo run -p xtask -- verify-schemas
 cargo run -p xtask -- verify-migrations
 cargo run -p xtask -- verify-arch
 cargo run -p xtask -- verify-eval-integrity
+cargo run -p xtask -- verify-docs
 ```
 
 All three CI platforms must pass. A red matrix stops the next wave.
