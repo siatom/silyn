@@ -8,6 +8,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use silyn_core::SilynError;
 use silyn_core::ids::{RunId, StepId};
+use sqlx::sqlite::SqliteRow;
 use sqlx::{Row, SqlitePool};
 
 use crate::codec::{decode_enum, encode_enum};
@@ -151,23 +152,43 @@ impl<'a> ToolLedger<'a> {
         .await
         .map_err(db_error)?;
 
-        row.map(|row| {
-            Ok(ToolCallRecord {
-                run_id: parse_id(
-                    &row.try_get::<String, _>("run_id").map_err(db_error)?,
-                    "tool_call_ledger.run_id",
-                )?,
-                step_id: parse_id(
-                    &row.try_get::<String, _>("step_id").map_err(db_error)?,
-                    "tool_call_ledger.step_id",
-                )?,
-                tool_call_id: row.try_get("tool_call_id").map_err(db_error)?,
-                tool_name: row.try_get("tool_name").map_err(db_error)?,
-                state: decode_enum(&row.try_get::<String, _>("state").map_err(db_error)?)?,
-                result_ref: row.try_get("result_ref").map_err(db_error)?,
-                created_at: row.try_get("created_at").map_err(db_error)?,
-            })
+        row.as_ref().map(Self::from_row).transpose()
+    }
+
+    /// Returns every call recorded for a run, oldest first.
+    ///
+    /// The ordering is `created_at`, then `step_id`, then `tool_call_id`, so a
+    /// caller can reconstruct the execution order without knowing the ids.
+    pub async fn list_by_run(&self, run_id: RunId) -> Result<Vec<ToolCallRecord>, SilynError> {
+        let rows = sqlx::query(
+            "SELECT run_id, step_id, tool_call_id, tool_name, state, result_ref, created_at
+             FROM tool_call_ledger
+             WHERE run_id = ?1
+             ORDER BY created_at ASC, step_id ASC, tool_call_id ASC",
+        )
+        .bind(run_id.to_string())
+        .fetch_all(self.pool)
+        .await
+        .map_err(db_error)?;
+
+        rows.iter().map(Self::from_row).collect()
+    }
+
+    fn from_row(row: &SqliteRow) -> Result<ToolCallRecord, SilynError> {
+        Ok(ToolCallRecord {
+            run_id: parse_id(
+                &row.try_get::<String, _>("run_id").map_err(db_error)?,
+                "tool_call_ledger.run_id",
+            )?,
+            step_id: parse_id(
+                &row.try_get::<String, _>("step_id").map_err(db_error)?,
+                "tool_call_ledger.step_id",
+            )?,
+            tool_call_id: row.try_get("tool_call_id").map_err(db_error)?,
+            tool_name: row.try_get("tool_name").map_err(db_error)?,
+            state: decode_enum(&row.try_get::<String, _>("state").map_err(db_error)?)?,
+            result_ref: row.try_get("result_ref").map_err(db_error)?,
+            created_at: row.try_get("created_at").map_err(db_error)?,
         })
-        .transpose()
     }
 }

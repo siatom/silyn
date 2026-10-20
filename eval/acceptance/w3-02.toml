@@ -1,0 +1,59 @@
+# W3-02 acceptance gates: run observability and cancellation surface.
+#
+# Runs and ledger rows are seeded through `silyn-storage` because `silyn run`
+# does not create runs before the runtime loop lands.
+
+[[gate]]
+id = "observe.run_events_listed"
+test = "crates/silyn-cli/tests/observe.rs::runs_events_lists_events_in_seq_order"
+required = true
+
+[[gate]]
+id = "observe.unknown_run_events_rejected"
+test = "crates/silyn-cli/tests/observe.rs::runs_events_unknown_run_exits_five"
+required = true
+
+[[gate]]
+id = "observe.tool_ledger_listed"
+test = "crates/silyn-cli/tests/observe.rs::runs_tools_exposes_ledger_states"
+required = true
+
+[[gate]]
+id = "observe.unknown_run_tools_rejected"
+test = "crates/silyn-cli/tests/observe.rs::runs_tools_unknown_run_exits_five"
+required = true
+
+[[gate]]
+id = "observe.cancel_file_created"
+test = "crates/silyn-cli/tests/observe.rs::runs_cancel_creates_the_documented_file"
+required = true
+
+[[gate]]
+id = "observe.cancel_is_idempotent"
+test = "crates/silyn-cli/tests/observe.rs::runs_cancel_is_idempotent"
+required = true
+
+[[gate]]
+id = "observe.cancel_terminal_run_rejected"
+test = "crates/silyn-cli/tests/observe.rs::runs_cancel_terminal_run_exits_five"
+required = true
+
+[[gate]]
+id = "observe.unknown_run_cancel_rejected"
+test = "crates/silyn-cli/tests/observe.rs::runs_cancel_unknown_run_exits_five"
+required = true
+
+[[gate]]
+id = "observe.run_surface_unchanged"
+test = "crates/silyn-cli/tests/observe.rs::run_still_exits_five_and_creates_no_run"
+required = true
+
+[[gate]]
+id = "observe.cancel_path_contract"
+test = "crates/silyn-app/src/observability.rs::cancel_path_is_home_run_run_id_cancel"
+required = true
+
+[[gate]]
+id = "observe.unknown_run_reads_rejected"
+test = "crates/silyn-app/src/observability.rs::observations_of_an_unknown_run_are_permanent"
+required = true

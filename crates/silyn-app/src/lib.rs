@@ -4,13 +4,17 @@
 //! rules live here so both frontends share identical behavior.
 
 mod app;
+mod observability;
 
 pub use app::{
     App, DEFAULT_CONTEXT_VERSION, DEFAULT_PROFILE_VERSION, InitReport, RECENT_RUNS_LIMIT,
 };
+pub use observability::{CancelRequest, RUN_SIGNAL_DIR};
 
 // Records are re-exported so frontends never depend on `silyn-storage` directly.
-pub use silyn_storage::{AgentRecord, RunRecord, SessionRecord, TaskRecord};
+pub use silyn_storage::{
+    AgentRecord, RunRecord, SessionRecord, TaskRecord, ToolCallRecord, ToolCallState,
+};
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
