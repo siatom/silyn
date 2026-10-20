@@ -69,6 +69,36 @@ id = "storage.transaction_rollback"
 test = "crates/silyn-storage/tests/storage.rs::transaction_rollback_leaves_no_rows"
 required = true
 
+[[gate]]
+id = "storage.journal_round_trip"
+test = "crates/silyn-storage/tests/journal.rs::event_round_trip"
+required = true
+
+[[gate]]
+id = "storage.event_seq_conflict"
+test = "crates/silyn-storage/tests/journal.rs::event_seq_conflict_is_transient"
+required = true
+
+[[gate]]
+id = "storage.state_and_event_same_transaction"
+test = "crates/silyn-storage/tests/journal.rs::state_and_event_share_transaction"
+required = true
+
+[[gate]]
+id = "storage.outbox_idempotent"
+test = "crates/silyn-storage/tests/journal.rs::outbox_is_idempotent"
+required = true
+
+[[gate]]
+id = "storage.ledger_blocks_duplicate_call"
+test = "crates/silyn-storage/tests/journal.rs::ledger_blocks_duplicate_call"
+required = true
+
+[[gate]]
+id = "storage.checkpoint_integrity"
+test = "crates/silyn-storage/tests/journal.rs::checkpoint_integrity"
+required = true
+
 # Contract tests stay ignored until their subsystem lands. They are tracked from
 # W0 so the registry cannot silently lose them.
 [[gate]]

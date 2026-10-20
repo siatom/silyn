@@ -12,6 +12,7 @@ silyn-core = { path = "../silyn-core" }
 chrono.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+sha2.workspace = true
 sqlx.workspace = true
 
 [dev-dependencies]

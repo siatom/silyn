@@ -4,29 +4,15 @@
 //! constraints. State-machine legality and authorization are decided by callers.
 
 use chrono::{DateTime, Utc};
-use serde::Serialize;
-use serde::de::DeserializeOwned;
-use serde_json::Value;
 use silyn_core::SilynError;
 use silyn_core::ids::{AgentId, RunId, SessionId, StepId, TaskId};
 use silyn_core::state::{RunStatus, TaskStatus};
 use sqlx::sqlite::SqliteRow;
 use sqlx::{Row, SqlitePool};
 
+use crate::codec::{decode_enum, encode_enum};
 use crate::error::{db_error, parse_id};
 use crate::models::{AgentRecord, RunRecord, SessionRecord, StepRecord, TaskRecord};
-
-fn encode_enum<T: Serialize>(value: &T) -> Result<String, SilynError> {
-    let encoded = serde_json::to_value(value)?;
-    encoded
-        .as_str()
-        .map(str::to_owned)
-        .ok_or_else(|| SilynError::Schema("enum did not encode as a string".to_owned()))
-}
-
-fn decode_enum<T: DeserializeOwned>(value: &str) -> Result<T, SilynError> {
-    serde_json::from_value(Value::String(value.to_owned())).map_err(Into::into)
-}
 
 fn text(row: &SqliteRow, column: &str) -> Result<String, SilynError> {
     row.try_get(column).map_err(db_error)
