@@ -1,0 +1,40 @@
+# W2-02 acceptance gates: capability-gated tool broker.
+#
+# The broker is the only path from model output to side effects. These gates
+# prove that authorization is checked before filesystem access, that the path
+# sandbox holds, and that every decision is audited.
+
+[[gate]]
+id = "tools.capability_denied_by_default"
+test = "crates/silyn-runtime/tests/tools.rs::capability_denied_by_default_is_audited"
+required = true
+
+[[gate]]
+id = "tools.path_traversal_rejected"
+test = "crates/silyn-runtime/tests/tools.rs::parent_traversal_is_rejected"
+required = true
+
+[[gate]]
+id = "tools.absolute_path_rejected"
+test = "crates/silyn-runtime/tests/tools.rs::absolute_path_is_rejected"
+required = true
+
+[[gate]]
+id = "tools.audit_written"
+test = "crates/silyn-runtime/tests/tools.rs::every_call_is_audited"
+required = true
+
+[[gate]]
+id = "tools.read_only_tools_work_inside_root"
+test = "crates/silyn-runtime/tests/tools.rs::allowed_tools_read_list_profile_and_write"
+required = true
+
+[[gate]]
+id = "tools.report_write_confined_to_output"
+test = "crates/silyn-runtime/tests/tools.rs::report_write_is_confined_to_output"
+required = true
+
+[[gate]]
+id = "tools.read_limit_enforced"
+test = "crates/silyn-runtime/tests/tools.rs::read_limit_is_enforced"
+required = true
