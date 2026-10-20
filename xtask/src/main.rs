@@ -549,7 +549,7 @@ fn verify_arch() -> Result<()> {
             ][..],
         ),
         ("silyn-cli", &["silyn-app", "silyn-core", "silyn-llm"][..]),
-        ("silyn-eval", &["silyn-core"][..]),
+        ("silyn-eval", &["silyn-core", "silyn-llm"][..]),
     ]);
 
     let crates_dir = root().join("crates");
