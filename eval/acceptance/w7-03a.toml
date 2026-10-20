@@ -1,0 +1,64 @@
+# W7-03a acceptance gates: operator docs, three-platform CI and docs gate.
+#
+# `cargo run -p xtask -- verify-acceptance` resolves every entry against the
+# real test source. Removing or renaming a test requires an integrator commit.
+
+[[gate]]
+id = "docs.readme_quickstart"
+test = "xtask/src/main.rs::readme_has_quickstart_security_and_license"
+required = true
+
+[[gate]]
+id = "docs.security_boundaries"
+test = "xtask/src/main.rs::security_doc_covers_trust_boundaries"
+required = true
+
+[[gate]]
+id = "docs.operations_rollback"
+test = "xtask/src/main.rs::operations_doc_covers_recovery"
+required = true
+
+[[gate]]
+id = "docs.experiment_template"
+test = "xtask/src/main.rs::experiment_template_records_protocol"
+required = true
+
+[[gate]]
+id = "docs.observability_contract"
+test = "xtask/src/main.rs::observability_doc_defines_span_contract"
+required = true
+
+[[gate]]
+id = "ci.three_platforms"
+test = "xtask/src/main.rs::ci_workflow_has_three_platforms"
+required = true
+
+[[gate]]
+id = "ci.required_gates"
+test = "xtask/src/main.rs::ci_workflow_runs_all_gates"
+required = true
+
+[[gate]]
+id = "xtask.docs_gate"
+test = "xtask/src/main.rs::docs_gate_accepts_repository"
+required = true
+
+[[gate]]
+id = "xtask.docs_gate_missing_section"
+test = "xtask/src/main.rs::docs_gate_rejects_missing_section"
+required = true
+
+[[gate]]
+id = "xtask.docs_gate_private_link"
+test = "xtask/src/main.rs::docs_gate_rejects_docs_local_link"
+required = true
+
+[[gate]]
+id = "xtask.docs_gate_unresolved_marker"
+test = "xtask/src/main.rs::docs_gate_rejects_unresolved_todo"
+required = true
+
+[[gate]]
+id = "xtask.docs_gate_broken_link"
+test = "xtask/src/main.rs::docs_gate_rejects_broken_relative_link"
+required = true

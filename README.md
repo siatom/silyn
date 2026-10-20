@@ -1,59 +1,220 @@
 # Silyn
 
-Silyn is a self-evolving AI agent. This repository contains the engineering
-implementation of the design described in `docs/architecture/`.
+Silyn is a self-evolving AI agent. It accumulates evidence-backed experience,
+proposes changes to its own policies, evaluates them on a sealed task
+distribution, and promotes only what demonstrably improves outcomes without
+widening its own permissions. This repository is the engineering implementation
+of the design in [`docs/architecture/`](docs/architecture/architecture.md).
 
-**Status: W0 architecture baseline.** The workspace, protocol contracts, event
-model, database schema and automated gates exist. The runtime, memory, learning
-and evolution loops land in W1–W6.
+Silyn is local-first and single-user. It stores state in SQLite on the local
+disk and does not expose a hosted service.
 
-## Quick start
+> **Status: work in progress.** Storage, the model gateway and tool broker, the
+> resumable runtime loop, the evidence verifier and the sealed evaluation lab
+> are implemented. Task execution through the CLI (`silyn run`), memory
+> injection, the evolution pipeline and the HTTP API are still being wired.
+> The first formal experiment is **W6** and has not run yet; this repository
+> does not claim any measured improvement.
+
+## Invariants
+
+These are the properties the kernel is built to preserve. A change that breaks
+one of them is a defect, not a trade-off.
+
+1. **Evidence, not self-assessment.** A run is successful only when independent
+   checkers inspect its artifacts and agree. `Unknown` is never treated as
+   success, and a missing checker produces no verdict rather than a vacuous pass.
+2. **Default deny.** A run starts with **no capabilities**. The tool broker
+   authorizes every call against the run's explicit capability set, regardless
+   of what the model or retrieved text asks for. There is no shell tool.
+3. **Resumable without duplicate side effects.** State changes and their events
+   commit in one transaction. A resume starts from the newest valid checkpoint;
+   a tool call that was started but not confirmed becomes `Indeterminate` and is
+   never replayed blindly.
+4. **Sealed evaluation.** The test split is reachable only through
+   `SealedTestSet` and an explicit operator flag. Suite artifacts and thresholds
+   are hash-locked before the first run, and the test split is never used for
+   tuning.
+5. **Auditable and reversible.** Business transitions are appended to a journal
+   with a per-aggregate sequence number. The promotion path is defined to use
+   immutable, versioned policies that roll back to the previous version; the
+   evolution CLI that exercises it lands with W5-03.
+
+## Quickstart
+
+Prerequisites: Rust **1.99** (`rust-toolchain.toml` pins it) and a local disk.
+SQLite is bundled; no database server is needed. The commands below use a debug
+build so a cold start stays within about ten minutes; use `--release` for
+experiments.
 
 ```bash
+# 1. Build and run the offline test suite.
+cargo build --workspace
 cargo test --workspace
-cargo run -p silyn-cli -- doctor
-cargo run -p silyn-cli -- --json config
+
+# 2. Create the data directory and database (default: ./.silyn).
+cargo run --quiet -p silyn-cli -- init
+
+# 3. Create an agent, a session and a task. Each command prints its id.
+cargo run --quiet -p silyn-cli -- agent create --owner alice
+cargo run --quiet -p silyn-cli -- session create --agent <agent-id>
+cargo run --quiet -p silyn-cli -- task create \
+  --session <session-id> --objective "Summarize the attached CSV"
+
+# 4. Inspect the durable record.
+cargo run --quiet -p silyn-cli -- runs list
+cargo run --quiet -p silyn-cli -- runs show <run-id>
+cargo run --quiet -p silyn-cli -- runs events <run-id>
+cargo run --quiet -p silyn-cli -- runs tools <run-id>
+
+# 5. Print build and configuration diagnostics (no secret values).
+cargo run --quiet -p silyn-cli -- --json doctor
 ```
 
-Local configuration lives in `.env` (ignored). Copy `.env.example` and set
-`DEEPSEEK_API_KEY` only when running a real-model experiment. Pull-request CI
-never calls a model; it uses offline fixtures.
+`SILYN_HOME` overrides the data directory (default `.silyn` in the current
+directory). The database is `$SILYN_HOME/silyn.db`; cross-process run signals
+live in `$SILYN_HOME/run/`.
 
-## Layout
+### Running a task (planned surface)
+
+The CLI run command is delivered by **W3-03**. Its frozen interface is:
+
+```bash
+# Offline: mock provider, no API key and no network. The only mode CI uses.
+cargo run --quiet -p silyn-cli -- run --task <task-id> --offline --json
+
+# Resume a non-terminal run from its newest checkpoint.
+cargo run --quiet -p silyn-cli -- run --resume <run-id> --offline --json
+```
+
+Until W3-03 lands, the bare `silyn run` exits **5** with a permanent error and
+creates no run; the option form above is rejected as a usage error (exit 2). The
+commands are documented now so scripts and operators share one contract. A
+real-model run needs `DEEPSEEK_API_KEY` in the environment (see
+[Security](docs/security.md)); never put the key on a command line.
+
+### Inspecting and cancelling runs
+
+```bash
+cargo run --quiet -p silyn-cli -- runs cancel <run-id>
+```
+
+Cancellation is a **file signal**, not a state transition: the CLI creates
+`$SILYN_HOME/run/<run-id>.cancel`, and the runtime performing the run polls it
+and moves the run to `Cancelled`. Repeated requests are idempotent. See
+[Operations](docs/operations.md) for the operator procedure.
+
+## Experiment
+
+The evaluation harness is the sealed `csv-stats-v1` lab. Development checks run
+against `dev` with the mock solver and write a report plus a statistics
+companion:
+
+```bash
+cargo run -p silyn-eval -- hashes
+cargo run -p silyn-eval -- run \
+  --suite csv-stats-v1 --split dev --arm all --repeats 1 \
+  --out target/eval/dev-report.json
+```
+
+The sealed test split is deliberately hard to run:
+
+```bash
+# W6 only. Requires an explicit operator flag; verifies suite.lock first.
+cargo run -p silyn-eval -- run \
+  --suite csv-stats-v1 --split test --allow-sealed \
+  --out eval/reports/<experiment-id>.json \
+  --markdown eval/reports/<experiment-id>.md
+```
+
+**W6 is the formal experiment step.** It pins the model, commit, suite version,
+split digests, seed, budget and repeats before the first call, and publishes
+either a pass, a failure with a reason, or an invalid experiment with a defect.
+No result is claimed until that report exists. Use
+[`docs/experiments/template.md`](docs/experiments/template.md) to record a run;
+the thresholds in `eval/suites/csv-stats-v1/suite.toml` are pre-registered and
+must not be edited after seeing results.
+
+## Architecture
+
+```mermaid
+flowchart LR
+    User[Operator] --> CLI[silyn-cli]
+    CLI --> App[silyn-app<br/>service layer]
+    App --> Runtime[silyn-runtime<br/>run loop, budgets, broker]
+    App --> Growth[silyn-growth<br/>memory, experience,<br/>candidates, promotion]
+    Runtime --> LLM[silyn-llm<br/>OpenAI-compatible gateway]
+    Runtime --> Tools[Capability-gated tools<br/>fs.read, fs.list, data.profile, report.write]
+    App --> Storage[(SQLite<br/>journal, checkpoints, ledger, audit)]
+    Growth --> Storage
+    Eval[silyn-eval<br/>sealed csv-stats lab] -. isolated worker .-> Runtime
+    Eval --> Reports[JSON + statistics + Markdown]
+```
+
+The stable kernel — identity and permissions, verification, audit, persistence
+protocols and promotion rules — cannot be modified by the agent at runtime.
+Candidates may only change the policy fields listed in
+[ADR 0003](docs/architecture/adr/0003-policy-artifact-and-patch.md). High-risk
+promotions require an operator and are denied by default.
+
+## Documentation
+
+- [Security](docs/security.md) — trust boundaries, capabilities, secrets,
+  cancellation, sealed suite, vulnerability reporting.
+- [Operations](docs/operations.md) — backup and restore, retention, rollback,
+  kill and resume, `Indeterminate` resolution, log locations.
+- [Observability](docs/architecture/observability.md) — planned span names,
+  fields and redaction rules (telemetry lands with W7-03b).
+- [Architecture](docs/architecture/architecture.md) and [ADRs](docs/architecture/adr/).
+- [Experiment template](docs/experiments/template.md).
+- [Gates](docs/gates/) — per-wave implementation evidence.
+
+## Repository layout
 
 ```
 crates/silyn-core      domain types, state machines, events, protocol traits
-crates/silyn-storage   SQLite, migrations, repositories (W1)
-crates/silyn-llm       OpenAI-compatible gateway (W2)
-crates/silyn-runtime   run loop, budgets, checkpoints, tool broker (W3)
-crates/silyn-growth    memory, experience, reflection, evolution (W4-W5)
+crates/silyn-storage   SQLite, migrations, journal, checkpoints, ledger
+crates/silyn-llm       OpenAI-compatible gateway
+crates/silyn-runtime   run loop, budgets, cancellation, tool broker
+crates/silyn-growth    memory, experience, reflection, evolution
 crates/silyn-app       shared service layer for CLI and HTTP
 crates/silyn-cli       command line interface
+crates/silyn-eval      sealed evaluation lab
 xtask                  repository gates
 migrations/            append-only SQLite migrations
 schemas/               versioned JSON Schema contracts
 eval/                  suites, acceptance registry, reports
-docs/architecture/     architecture and ADRs
-docs/agents/           task packages and merge log for agent-operated delivery
+docs/                  architecture, operations, security, gates
 ```
 
 ## Gates
 
 `cargo run -p xtask -- <command>` implements the automated gates:
 
-- `verify-acceptance` — registered acceptance tests exist and are executable
-- `verify-migrations` — merged migrations are immutable
-- `verify-schemas` — schema documents are well formed
-- `verify-arch` — crate dependencies follow the allowed directions
-- `verify-eval-integrity` — sealed evaluation suites are unchanged
+| Command | What it protects |
+|---|---|
+| `verify-docs` | README and operator docs exist, sections are present, links resolve, no private paths or unresolved markers |
+| `verify-acceptance` | registered acceptance tests exist and are executable |
+| `verify-migrations` | merged migrations are immutable |
+| `verify-schemas` | schema documents are well formed |
+| `verify-arch` | crate dependencies follow the allowed directions |
+| `verify-eval-integrity` | sealed evaluation suites are unchanged |
 
-## Design boundaries
+CI runs these on Windows, macOS and Linux. See
+[`.github/workflows/ci.yml`](.github/workflows/ci.yml).
 
-The stable kernel — identity and permissions, verification, audit, persistence
-protocols and promotion rules — cannot be modified by the agent at runtime.
-Candidates may only change policy fields listed in ADR 0003. High-risk
-promotions require an operator and are denied by default.
+## Security
+
+Silyn is a local tool with a deliberately small attack surface, not a sandbox.
+The model provider is untrusted, tool output and retrieved text are untrusted
+data (never instructions), and the agent cannot grant itself a capability. The
+MVP does **not** provide OS-level sandboxing: evaluation workers run as separate
+processes with a cleared environment and a fresh working directory, but they can
+still read the filesystem. Run experiments on a machine you trust.
+
+Report vulnerabilities privately; do not open a public issue and never include a
+key or user data. Details are in [Security](docs/security.md#reporting-a-vulnerability).
 
 ## License
 
-MIT. See `LICENSE`.
+MIT. See [LICENSE](LICENSE).

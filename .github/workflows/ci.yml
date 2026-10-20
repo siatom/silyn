@@ -8,22 +8,36 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: "1"
+
 jobs:
   test:
-    name: test (windows)
-    # macOS and Linux are part of the cross-platform baseline (ADR 0007) but are
-    # intentionally not wired yet. Add them back to the matrix when the runtime
-    # starts touching platform-specific process and path behavior.
-    runs-on: windows-latest
+    name: test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - windows-latest
+          - ubuntu-latest
+          - macos-latest
     steps:
       - uses: actions/checkout@v4
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@master
         with:
+          # Stable toolchain, pinned to the same version as rust-toolchain.toml.
           toolchain: "1.99.0"
           components: rustfmt, clippy
 
+      # Caches the cargo registry and target directory for this runner/toolchain.
       - uses: Swatinem/rust-cache@v2
 
       - name: Format
@@ -35,8 +49,11 @@ jobs:
       - name: Test
         run: cargo test --workspace
 
-      - name: Build
+      - name: Build release
         run: cargo build --workspace --release
+
+      - name: Gate - docs
+        run: cargo run -p xtask -- verify-docs
 
       - name: Gate - acceptance registry
         run: cargo run -p xtask -- verify-acceptance
@@ -53,8 +70,11 @@ jobs:
       - name: Gate - eval integrity
         run: cargo run -p xtask -- verify-eval-integrity
 
-      - name: Smoke - CLI
+      - name: Smoke - CLI version
         run: cargo run --quiet --release -p silyn-cli -- --version
 
       - name: Smoke - doctor JSON
+        env:
+          # Keep the smoke home out of the checkout. The directory is ephemeral.
+          SILYN_HOME: ${{ runner.temp }}/silyn-home
         run: cargo run --quiet --release -p silyn-cli -- --json doctor
