@@ -9,12 +9,13 @@ of the design in [`docs/architecture/`](docs/architecture/architecture.md).
 Silyn is local-first and single-user. It stores state in SQLite on the local
 disk and does not expose a hosted service.
 
-> **Status: work in progress.** Storage, the model gateway and tool broker, the
-> resumable runtime loop, the evidence verifier and the sealed evaluation lab
-> are implemented. Task execution through the CLI (`silyn run`), memory
-> injection, the evolution pipeline and the HTTP API are still being wired.
-> The first formal experiment is **W6** and has not run yet; this repository
-> does not claim any measured improvement.
+> **Status: MVP implemented; formal experiment completed with a negative
+> result.** Storage, the model gateway and tool broker, the resumable runtime
+> loop, memory, the evidence verifier, the sealed evaluation lab, the evolution
+> pipeline, the CLI and the local HTTP/SSE API are implemented. The first W6
+> experiment did not show a gain and its candidate was not promoted; see
+> [`docs/experiments/csv-stats-v1.md`](docs/experiments/csv-stats-v1.md). This
+> repository does not claim a measured improvement.
 
 ## Invariants
 
@@ -75,23 +76,22 @@ cargo run --quiet -p silyn-cli -- --json doctor
 directory). The database is `$SILYN_HOME/silyn.db`; cross-process run signals
 live in `$SILYN_HOME/run/`.
 
-### Running a task (planned surface)
-
-The CLI run command is delivered by **W3-03**. Its frozen interface is:
+### Running a task
 
 ```bash
-# Offline: mock provider, no API key and no network. The only mode CI uses.
+# Offline: mock provider, no API key and no network.
 cargo run --quiet -p silyn-cli -- run --task <task-id> --offline --json
 
 # Resume a non-terminal run from its newest checkpoint.
 cargo run --quiet -p silyn-cli -- run --resume <run-id> --offline --json
+
+# Real model: pass capabilities explicitly; default is no capabilities.
+cargo run --quiet -p silyn-cli -- run --session <session-id>   --objective "profile the CSV" --capability fs.read --capability data.profile
 ```
 
-Until W3-03 lands, the bare `silyn run` exits **5** with a permanent error and
-creates no run; the option form above is rejected as a usage error (exit 2). The
-commands are documented now so scripts and operators share one contract. A
-real-model run needs `DEEPSEEK_API_KEY` in the environment (see
-[Security](docs/security.md)); never put the key on a command line.
+A real-model run needs `DEEPSEEK_API_KEY` in the environment (see
+[Security](docs/security.md)); never put the key on a command line. The bare
+`silyn run` exits **5** with a permanent error and creates no run.
 
 ### Inspecting and cancelling runs
 
@@ -103,6 +103,16 @@ Cancellation is a **file signal**, not a state transition: the CLI creates
 `$SILYN_HOME/run/<run-id>.cancel`, and the runtime performing the run polls it
 and moves the run to `Cancelled`. Repeated requests are idempotent. See
 [Operations](docs/operations.md) for the operator procedure.
+
+### Local HTTP API
+
+```bash
+cargo run --quiet -p silyn-cli -- serve --addr 127.0.0.1:7788 --json
+```
+
+The server is loopback-only by default. Set `SILYN_API_TOKEN` to require a
+bearer token on `/v1/*`; `/health` stays public. SSE is available at
+`/v1/runs/<run-id>/events`.
 
 ## Experiment
 
@@ -127,13 +137,14 @@ cargo run -p silyn-eval -- run \
   --markdown eval/reports/<experiment-id>.md
 ```
 
-**W6 is the formal experiment step.** It pins the model, commit, suite version,
-split digests, seed, budget and repeats before the first call, and publishes
-either a pass, a failure with a reason, or an invalid experiment with a defect.
-No result is claimed until that report exists. Use
-[`docs/experiments/template.md`](docs/experiments/template.md) to record a run;
-the thresholds in `eval/suites/csv-stats-v1/suite.toml` are pre-registered and
-must not be edited after seeing results.
+**W6 has run.** It pinned the model, commit, suite version, split digests, seed,
+budget and repeats before the first call. The sealed result was A 9/10, B 8/10,
+C 6/10; C−A was −30 pp (95% CI [−60, 0]). The candidate failed the dev gate and
+was not promoted — a negative result, not an evolution claim. See
+[`docs/experiments/csv-stats-v1.md`](docs/experiments/csv-stats-v1.md). The
+thresholds in `eval/suites/csv-stats-v1/suite.toml` are pre-registered and must
+not be edited after seeing results. Use
+[`docs/experiments/template.md`](docs/experiments/template.md) for the next run.
 
 ## Architecture
 
@@ -163,8 +174,9 @@ promotions require an operator and are denied by default.
   cancellation, sealed suite, vulnerability reporting.
 - [Operations](docs/operations.md) — backup and restore, retention, rollback,
   kill and resume, `Indeterminate` resolution, log locations.
-- [Observability](docs/architecture/observability.md) — planned span names,
-  fields and redaction rules (telemetry lands with W7-03b).
+- [Observability](docs/architecture/observability.md) — span names, fields and
+  redaction rules (implemented).
+- [HTTP API](docs/gates/w7-01.md) — local routes, SSE, auth and error mapping.
 - [Architecture](docs/architecture/architecture.md) and [ADRs](docs/architecture/adr/).
 - [Experiment template](docs/experiments/template.md).
 - [Gates](docs/gates/) — per-wave implementation evidence.
