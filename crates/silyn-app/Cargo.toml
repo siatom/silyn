@@ -1,0 +1,15 @@
+[package]
+name = "silyn-app"
+description = "Application service layer shared by the CLI and the future HTTP API"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+silyn-core = { path = "../silyn-core" }
+silyn-growth = { path = "../silyn-growth" }
+silyn-llm = { path = "../silyn-llm" }
+silyn-runtime = { path = "../silyn-runtime" }
+silyn-storage = { path = "../silyn-storage" }

@@ -1,0 +1,56 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://silyn.dev/schemas/policy_patch.schema.json",
+  "title": "PolicyPatch",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "candidate_id",
+    "base_policy_version",
+    "hypothesis",
+    "evidence_run_ids",
+    "expected_gain",
+    "risk_class",
+    "operations"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": { "type": "integer", "const": 1 },
+    "candidate_id": { "type": "string", "format": "uuid" },
+    "base_policy_version": { "type": "string", "format": "uuid" },
+    "hypothesis": { "type": "string", "minLength": 1, "maxLength": 2000 },
+    "evidence_run_ids": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "type": "string", "format": "uuid" }
+    },
+    "expected_gain": {
+      "type": "object",
+      "required": ["metric", "delta_pp"],
+      "additionalProperties": false,
+      "properties": {
+        "metric": { "type": "string" },
+        "delta_pp": { "type": "number" }
+      }
+    },
+    "risk_class": { "type": "string", "enum": ["low", "medium", "high"] },
+    "operations": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 20,
+      "items": {
+        "type": "object",
+        "required": ["op", "path"],
+        "additionalProperties": false,
+        "properties": {
+          "op": { "type": "string", "enum": ["add", "replace", "remove"] },
+          "path": {
+            "type": "string",
+            "pattern": "^/(planner/(prompt_fragments|rules)|context/retrieval)(/.*)?$"
+          },
+          "value": {}
+        }
+      }
+    }
+  }
+}

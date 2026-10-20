@@ -1,0 +1,16 @@
+version: 1
+
+# W0 is a CLI scaffold, not a service. Build + smoke verification only.
+install: ""
+clean: ""
+build: "cargo build --release --workspace"
+test: "cargo test --workspace"
+
+deploy:
+  start: ""
+
+verify:
+  command: "cargo run --quiet --release -p silyn-cli -- --version"
+  timeout: 60
+
+keep_releases: 1

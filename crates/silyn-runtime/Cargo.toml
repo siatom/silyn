@@ -1,0 +1,13 @@
+[package]
+name = "silyn-runtime"
+description = "Agent run loop, budgets, checkpoints and tool broker for Silyn"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+silyn-core = { path = "../silyn-core" }
+silyn-llm = { path = "../silyn-llm" }
+silyn-storage = { path = "../silyn-storage" }

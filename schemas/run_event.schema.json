@@ -1,0 +1,37 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://silyn.dev/schemas/run_event.schema.json",
+  "title": "RunEventEnvelope",
+  "type": "object",
+  "required": ["event_id", "aggregate_id", "seq", "schema_version", "occurred_at", "event"],
+  "additionalProperties": false,
+  "properties": {
+    "event_id": { "type": "string", "format": "uuid" },
+    "aggregate_id": { "type": "string", "format": "uuid" },
+    "seq": { "type": "integer", "minimum": 1 },
+    "schema_version": { "type": "integer", "const": 1 },
+    "occurred_at": { "type": "string", "format": "date-time" },
+    "correlation_id": { "type": ["string", "null"], "format": "uuid" },
+    "event": {
+      "type": "object",
+      "required": ["type"],
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": [
+            "run_created",
+            "run_started",
+            "step_completed",
+            "tool_failed",
+            "run_verified",
+            "run_completed",
+            "run_failed",
+            "run_cancelled"
+          ]
+        },
+        "data": { "type": "object" }
+      },
+      "additionalProperties": true
+    }
+  }
+}

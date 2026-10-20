@@ -1,0 +1,57 @@
+# Acceptance registry.
+#
+# Each gate maps a stable gate id to an executable test. CI (`cargo xtask
+# verify-acceptance`) fails when a required test disappears or is #[ignore]d.
+# Tests may be added; removing or renaming one requires an integrator commit.
+
+[[gate]]
+id = "core.state_machine.task_happy_path"
+test = "crates/silyn-core/tests/state_machine.rs::task_happy_path_is_reachable"
+required = true
+
+[[gate]]
+id = "core.state_machine.terminal_states_are_final"
+test = "crates/silyn-core/tests/state_machine.rs::terminal_states_are_final"
+required = true
+
+[[gate]]
+id = "core.state_machine.run_cannot_skip_verification"
+test = "crates/silyn-core/tests/state_machine.rs::run_cannot_skip_verification"
+required = true
+
+[[gate]]
+id = "core.state_machine.candidate_cannot_skip_evaluation"
+test = "crates/silyn-core/tests/state_machine.rs::candidate_cannot_promote_without_evaluation"
+required = true
+
+[[gate]]
+id = "core.errors.only_transient_is_retryable"
+test = "crates/silyn-core/src/error.rs::only_transient_errors_are_retryable"
+required = true
+
+[[gate]]
+id = "core.ids.time_ordered"
+test = "crates/silyn-core/src/ids.rs::ids_are_time_ordered_and_round_trip"
+required = true
+
+[[gate]]
+id = "core.events.envelope_round_trip"
+test = "crates/silyn-core/src/event.rs::envelope_round_trips"
+required = true
+
+# Contract tests stay ignored until their subsystem lands. They are tracked from
+# W0 so the registry cannot silently lose them.
+[[gate]]
+id = "contracts.model_provider"
+test = "crates/silyn-core/tests/contracts.rs::model_provider_round_trip"
+required = false
+
+[[gate]]
+id = "contracts.memory_repository"
+test = "crates/silyn-core/tests/contracts.rs::memory_search_returns_provenance"
+required = false
+
+[[gate]]
+id = "contracts.promotion_gate"
+test = "crates/silyn-core/tests/contracts.rs::promotion_gate_requires_low_risk_for_auto"
+required = false

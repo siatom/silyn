@@ -1,0 +1,14 @@
+[package]
+name = "silyn-growth"
+description = "Memory, experience extraction, reflection and evolution for Silyn"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+silyn-core = { path = "../silyn-core" }
+silyn-storage = { path = "../silyn-storage" }
+serde.workspace = true
+serde_json.workspace = true

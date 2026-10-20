@@ -1,0 +1,20 @@
+[package]
+name = "silyn-cli"
+description = "Silyn command line interface"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "silyn"
+path = "src/main.rs"
+
+[dependencies]
+clap.workspace = true
+dotenvy.workspace = true
+silyn-app = { path = "../silyn-app" }
+silyn-core = { path = "../silyn-core" }
+silyn-llm = { path = "../silyn-llm" }
+serde_json.workspace = true
