@@ -673,6 +673,110 @@ async fn resume_reuses_completed_tool_result() {
 }
 
 #[tokio::test]
+async fn pending_tool_is_recovered_before_the_next_step_budget() {
+    let storage = new_storage().await;
+    let task = seed_task(&storage, "pending at the step limit").await;
+    let run_id = create_run(&storage, task.id).await;
+
+    let step_id = StepId::new();
+    let call = ToolCall {
+        call_id: format!("{run_id}:1"),
+        tool: "fs.read".to_owned(),
+        arguments: json!({ "path": "data.csv" }),
+    };
+    let state = RunState {
+        step_seq: 1,
+        pending: Some(PendingAction {
+            step_id,
+            step_seq: 1,
+            call: call.clone(),
+        }),
+        ..RunState::default()
+    };
+    CheckpointStore::new(storage.pool())
+        .insert(&CheckpointRecord::new(
+            run_id,
+            1,
+            serde_json::to_string(&state).expect("state json"),
+            RUN_STATE_SCHEMA_VERSION,
+        ))
+        .await
+        .expect("insert checkpoint");
+    ToolLedger::new(storage.pool())
+        .begin(&ToolCallRecord {
+            run_id,
+            step_id,
+            tool_call_id: call.call_id.clone(),
+            tool_name: call.tool.clone(),
+            state: ToolCallState::Started,
+            result_ref: None,
+            created_at: chrono::Utc::now(),
+        })
+        .await
+        .expect("ledger begin");
+    ToolLedger::new(storage.pool())
+        .complete(
+            run_id,
+            step_id,
+            &call.call_id,
+            ToolCallState::Succeeded,
+            Some("cached"),
+        )
+        .await
+        .expect("ledger complete");
+
+    let tools = TestTools::new();
+    let provider = Arc::new(MockProvider::new(vec![response(final_action("unused"))]));
+    let runtime = Runtime::new(
+        storage.clone(),
+        provider.clone(),
+        tools.clone(),
+        Arc::new(UnknownVerifier),
+    );
+    let options = RunOptions {
+        budget: silyn_runtime::BudgetSpec {
+            max_steps: 1,
+            ..silyn_runtime::BudgetSpec::default()
+        },
+        ..default_options()
+    };
+
+    let outcome = runtime
+        .resume(run_id, options)
+        .await
+        .expect("resume completes");
+
+    assert_eq!(outcome.status, RunStatus::Failed);
+    assert!(
+        outcome
+            .reason
+            .as_deref()
+            .is_some_and(|reason| reason.contains("step budget")),
+        "the next model step is over budget"
+    );
+    assert_eq!(
+        tools.call_count(),
+        0,
+        "the completed pending call must be reused, not executed again"
+    );
+    assert!(
+        provider.requests().is_empty(),
+        "recovering the pending call does not call the model"
+    );
+
+    let events = silyn_storage::Journal::new(storage.pool())
+        .list_for_aggregate(run_id)
+        .await
+        .expect("events");
+    assert!(
+        events
+            .iter()
+            .any(|envelope| matches!(envelope.event, RunEvent::StepCompleted { seq: 1, .. })),
+        "the reused result must be recorded as the completed step"
+    );
+}
+
+#[tokio::test]
 async fn seeded_started_ledger_blocks_replay() {
     let storage = new_storage().await;
     let task = seed_task(&storage, "seeded indeterminate").await;

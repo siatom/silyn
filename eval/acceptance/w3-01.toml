@@ -49,3 +49,8 @@ required = true
 id = "runtime.terminal_event_written"
 test = "crates/silyn-runtime/tests/run.rs::terminal_events_and_rows_are_consistent"
 required = true
+
+[[gate]]
+id = "runtime.pending_tool_recovers_at_step_limit"
+test = "crates/silyn-runtime/tests/run.rs::pending_tool_is_recovered_before_the_next_step_budget"
+required = true

@@ -430,6 +430,14 @@ impl RunSession<'_> {
                 .await
                 .map(StepResult::Finished);
         }
+
+        // A pending action belongs to the step that produced it. Resolve it
+        // before charging the next step, otherwise a crash during the last
+        // allowed step could never be resumed.
+        if let Some(pending) = self.state.pending.clone() {
+            return self.recover_pending(pending).await;
+        }
+
         let next_step = self.state.step_seq.saturating_add(1);
         let next_step_u32 = u32::try_from(next_step).unwrap_or(u32::MAX);
         if let Err(error) = self.tracker.check_step(next_step_u32) {
@@ -437,10 +445,6 @@ impl RunSession<'_> {
                 .finish_failed(format!("budget exhausted: {error}"))
                 .await
                 .map(StepResult::Finished);
-        }
-
-        if let Some(pending) = self.state.pending.clone() {
-            return self.recover_pending(pending).await;
         }
 
         self.state.step_seq = next_step;
