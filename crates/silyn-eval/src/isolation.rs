@@ -6,7 +6,9 @@
 //!
 //! Every attempt gets:
 //! - a cleared environment plus an allowlist (`PATH`, `SYSTEMROOT`, `TEMP`, `TMP`
-//!   on Windows; `PATH`, `HOME` on Unix);
+//!   on Windows; `PATH`, `HOME` on Unix). macOS CoreFoundation adds
+//!   `__CF_USER_TEXT_ENCODING` to every child after `env_clear()`; it carries no
+//!   secret and is documented rather than removed;
 //! - a fresh temporary working directory, which is also the base for the task
 //!   database (`<cwd>/silyn-eval.sqlite`) so no two attempts share state;
 //! - a wall-clock timeout, after which the child is killed.

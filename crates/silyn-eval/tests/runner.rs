@@ -28,6 +28,19 @@ fn project_task() -> TaskInput {
     }
 }
 
+/// Variables the platform adds to a child process after `env_clear()`.
+///
+/// macOS CoreFoundation injects `__CF_USER_TEXT_ENCODING` at process start, so
+/// the worker cannot avoid inheriting it. It carries the user id and text
+/// encoding only; no secret, path or caller state reaches the worker through it.
+fn platform_injected_env_vars() -> &'static [&'static str] {
+    if cfg!(target_os = "macos") {
+        &["__CF_USER_TEXT_ENCODING"]
+    } else {
+        &[]
+    }
+}
+
 #[test]
 fn three_arms_share_the_same_tasks_and_budget() {
     let (configs, arms) = common::scripted_arms(4, 6, 9);
@@ -163,10 +176,16 @@ fn worker_scrubs_environment_and_sets_fresh_cwd() {
         .map(|key| (*key).to_owned())
         .collect();
     let broadcast: BTreeSet<String> = diagnostics.env_keys.iter().cloned().collect();
+    let mut permitted = allowed.clone();
+    permitted.extend(
+        platform_injected_env_vars()
+            .iter()
+            .map(|key| (*key).to_owned()),
+    );
     assert!(
-        broadcast.is_subset(&allowed),
+        broadcast.is_subset(&permitted),
         "worker inherited variables outside the allowlist: {:?}",
-        broadcast.difference(&allowed).collect::<Vec<_>>()
+        broadcast.difference(&permitted).collect::<Vec<_>>()
     );
     assert_eq!(
         diagnostics.allowed_env.into_iter().collect::<BTreeSet<_>>(),
