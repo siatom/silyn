@@ -39,11 +39,12 @@ Practical consequences:
 
 ## Capabilities and default deny
 
-A run starts with **no capabilities**. The CLI only grants what is passed
-explicitly (`--capability <name>` on the planned `silyn run` surface). The
-broker performs a plain string comparison against the run's granted capabilities
-before any filesystem access; prompts and tool arguments are never consulted for
-authorization.
+A run starts with **no capabilities**. The CLI only grants what the operator
+configures explicitly: repeated `--capability <name>` flags, or the
+`run.capabilities` list in `$SILYN_HOME/config.toml` when no flag is given
+(flags replace the configured list). The broker performs a plain string
+comparison against the run's granted capabilities before any filesystem
+access; prompts and tool arguments are never consulted for authorization.
 
 | Capability | Tool | Reach |
 |---|---|---|

@@ -76,6 +76,45 @@ cargo run --quiet -p silyn-cli -- --json doctor
 directory). The database is `$SILYN_HOME/silyn.db`; cross-process run signals
 live in `$SILYN_HOME/run/`.
 
+### Run directly
+
+```bash
+cargo run --quiet -p silyn-cli -- "profile the CSV"
+```
+
+A bare objective is a complete command: Silyn reuses the newest local agent,
+starts a new session and runs the task. The answer is on stdout, the run id and
+status on stderr; `--json` prints the full outcome. Run parameters belong in
+the configuration file rather than on the command line.
+
+### Configuration
+
+`$SILYN_HOME/config.toml` (default `.silyn/config.toml`) holds the defaults for
+`silyn "<objective>"` and `silyn run`:
+
+```toml
+[run]
+model = "deepseek-chat"
+offline = false
+max_steps = 16
+max_wall_secs = 900
+max_input_tokens = 200000
+max_output_tokens = 20000
+max_cost_usd = 0.50
+capabilities = ["fs.read", "data.profile"]
+
+[agent]
+# owner = "alice"           # owner of the agent created on first use
+# id = "<agent-id>"         # reuse a specific agent
+# session = "<session-id>"  # reuse a conversation thread
+```
+
+Precedence is explicit flags, then the file, then the environment defaults, so
+`silyn "..." --model other` overrides `run.model`. `--config <file>` selects a
+different file; an unknown key or an unreadable file is a permanent error
+(exit 5). Secrets never go in the file: the provider still reads its key from
+the environment variable named by `SILYN_LLM_API_KEY_ENV`.
+
 ### Running a task
 
 ```bash
