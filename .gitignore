@@ -9,5 +9,5 @@ target/
 .local-cicd/
 
 # Local-only docs and worktrees
-docs.local/
+*.local
 .worktrees/
