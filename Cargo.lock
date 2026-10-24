@@ -1726,6 +1726,7 @@ dependencies = [
  "chrono",
  "clap",
  "dotenvy",
+ "serde",
  "serde_json",
  "silyn-api",
  "silyn-app",
@@ -1734,6 +1735,7 @@ dependencies = [
  "silyn-storage",
  "tempfile",
  "tokio",
+ "toml",
 ]
 
 [[package]]

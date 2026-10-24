@@ -12,6 +12,12 @@
 //!
 //! This binary contains no business logic: every command delegates to
 //! `silyn-app` and only formats results.
+//!
+//! The bare `silyn "objective"` form runs a task directly. Common parameters
+//! live in `$SILYN_HOME/config.toml`, so the command line stays short; explicit
+//! flags always win over the file.
+
+mod config;
 
 use std::collections::HashSet;
 use std::env;
@@ -23,6 +29,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
+use config::{ConfigFile, LoadedConfig, RunConfig, home_dir};
 use silyn_app::{
     AgentRecord, App, BudgetSpec, CandidateDetail, CandidateRecord, EvaluationAttachment,
     ExperienceRecord, MemoryHitRecord, MemoryScope, PolicyInventory, PolicyPatch,
@@ -49,12 +56,29 @@ const EXIT_PERMANENT: u8 = 5;
     name = "silyn",
     version,
     about = "Silyn - a self-evolving AI agent",
-    disable_help_subcommand = true
+    long_about = "Silyn - a self-evolving AI agent\n\n\
+Run an objective directly:\n  silyn \"profile the CSV\"\n\n\
+Common run parameters live in $SILYN_HOME/config.toml; explicit flags win.",
+    disable_help_subcommand = true,
+    args_conflicts_with_subcommands = true
 )]
 struct Cli {
     /// Emit machine-readable JSON.
     #[arg(long, global = true)]
     json: bool,
+
+    /// Configuration file; defaults to `$SILYN_HOME/config.toml`.
+    #[arg(long, global = true, value_name = "FILE")]
+    config: Option<PathBuf>,
+
+    #[command(flatten)]
+    overrides: RunOverrides,
+
+    /// Objective to execute directly, e.g. `silyn "profile the CSV"`.
+    ///
+    /// Without a prompt, a subcommand is required; see `silyn --help`.
+    #[arg(value_name = "PROMPT")]
+    prompt: Option<String>,
 
     #[command(subcommand)]
     command: Option<Command>,
@@ -140,6 +164,19 @@ struct RunArgs {
     /// Resume a created or interrupted run.
     #[arg(long, value_parser = parse_run_id)]
     resume: Option<RunId>,
+    /// Expected JSON object. Enables expected-answer verification.
+    #[arg(long, value_name = "JSON", value_parser = parse_expected_json)]
+    expect_json: Option<serde_json::Value>,
+    #[command(flatten)]
+    overrides: RunOverrides,
+}
+
+/// Model, budget and capability flags shared by `silyn run` and the prompt form.
+///
+/// Every value is optional: unset fields fall back to `$SILYN_HOME/config.toml`
+/// and then to the built-in defaults.
+#[derive(Debug, Default, clap::Args)]
+struct RunOverrides {
     /// Use the deterministic offline provider: no API key, no network.
     #[arg(long)]
     offline: bool,
@@ -161,12 +198,65 @@ struct RunArgs {
     /// Maximum cost in USD. Requires a configured price table.
     #[arg(long)]
     max_cost_usd: Option<f64>,
-    /// Capability granted to the run (repeatable). Defaults to none.
+    /// Capability granted to the run (repeatable). Replaces the configured list.
     #[arg(long = "capability", value_name = "NAME")]
     capabilities: Vec<String>,
-    /// Expected JSON object. Enables expected-answer verification.
-    #[arg(long, value_name = "JSON", value_parser = parse_expected_json)]
-    expect_json: Option<serde_json::Value>,
+}
+
+impl RunOverrides {
+    /// True when the run must use the offline provider.
+    fn offline(&self, config: &RunConfig) -> bool {
+        self.offline || config.offline.unwrap_or(false)
+    }
+
+    /// Merges flags over the configuration file and the built-in defaults.
+    fn into_options(self, config: &RunConfig) -> RunOptions {
+        let defaults = BudgetSpec::default();
+        let model = self
+            .model
+            .or_else(|| config.model.clone())
+            .map(|model| model.trim().to_owned())
+            .filter(|model| !model.is_empty())
+            .unwrap_or_else(default_model);
+        let capabilities = if self.capabilities.is_empty() {
+            dedupe(config.capabilities.clone().unwrap_or_default())
+        } else {
+            dedupe(self.capabilities)
+        };
+
+        RunOptions {
+            model,
+            capabilities,
+            budget: BudgetSpec {
+                max_steps: self
+                    .max_steps
+                    .or(config.max_steps)
+                    .unwrap_or(defaults.max_steps),
+                max_input_tokens: self
+                    .max_input_tokens
+                    .or(config.max_input_tokens)
+                    .unwrap_or(defaults.max_input_tokens),
+                max_output_tokens: self
+                    .max_output_tokens
+                    .or(config.max_output_tokens)
+                    .unwrap_or(defaults.max_output_tokens),
+                max_cost_usd: self.max_cost_usd.or(config.max_cost_usd),
+                max_wall_clock: Duration::from_secs(
+                    self.max_wall_secs
+                        .or(config.max_wall_secs)
+                        .unwrap_or(defaults.max_wall_clock.as_secs()),
+                ),
+                step_timeout: defaults.step_timeout,
+            },
+            // The service fills the price from the provider configuration; a
+            // cost cap without a configured price is a permanent error there.
+            price: None,
+            // Filled once the run id exists, so another process can cancel it.
+            cancel_file: None,
+            memories: Vec::new(),
+            agent_id: None,
+        }
+    }
 }
 
 #[derive(Debug, Subcommand)]
@@ -474,8 +564,21 @@ async fn main() -> ExitCode {
     dotenvy::dotenv().ok();
 
     let cli = Cli::parse();
+    let loaded = match LoadedConfig::load(cli.config.as_deref()) {
+        Ok(loaded) => loaded,
+        Err(error) => return report(&error, cli.json),
+    };
+
+    if let Some(prompt) = cli.prompt {
+        // `args_conflicts_with_subcommands` guarantees `command` is None.
+        return match prompt_run(prompt, cli.overrides, &loaded.config, cli.json).await {
+            Ok(code) => code,
+            Err(error) => report(&error, cli.json),
+        };
+    }
+
     match cli.command {
-        Some(command) => match dispatch(command, cli.json).await {
+        Some(command) => match dispatch(command, &loaded, cli.json).await {
             Ok(code) => code,
             Err(error) => report(&error, cli.json),
         },
@@ -483,7 +586,12 @@ async fn main() -> ExitCode {
     }
 }
 
-async fn dispatch(command: Command, json: bool) -> Result<ExitCode, SilynError> {
+async fn dispatch(
+    command: Command,
+    loaded: &LoadedConfig,
+    json: bool,
+) -> Result<ExitCode, SilynError> {
+    let config = &loaded.config;
     let result = match command {
         Command::Init => init(json).await,
         Command::Agent { command } => match command {
@@ -529,10 +637,10 @@ async fn dispatch(command: Command, json: bool) -> Result<ExitCode, SilynError> 
         },
         Command::Report { command } => report_command(command, json).await,
         // `run` maps the run outcome to a stable exit code, so it owns the code.
-        Command::Run(args) => return run(args, json).await,
+        Command::Run(args) => return run(args, &config.run, json).await,
         Command::Serve { addr, token_env } => return serve(addr, &token_env, json).await,
-        Command::Doctor => doctor(json),
-        Command::Config => config(json),
+        Command::Doctor => doctor(loaded, json),
+        Command::Config => show_config(loaded, json),
     };
 
     result.map(|()| ExitCode::SUCCESS)
@@ -580,10 +688,6 @@ fn class_name(class: ErrorClass) -> &'static str {
         ErrorClass::PolicyDenied => "policy_denied",
         ErrorClass::Indeterminate => "indeterminate",
     }
-}
-
-fn home_dir() -> PathBuf {
-    env::var("SILYN_HOME").map_or_else(|_| PathBuf::from(".silyn"), PathBuf::from)
 }
 
 /// Serves the local HTTP API. The listener is bound before the JSON line is
@@ -652,7 +756,7 @@ impl ResolvedConfig {
     }
 }
 
-fn doctor(json: bool) -> Result<(), SilynError> {
+fn doctor(loaded: &LoadedConfig, json: bool) -> Result<(), SilynError> {
     let config = ResolvedConfig::from_env();
     let platform = format!("{}-{}", env::consts::OS, env::consts::ARCH);
 
@@ -662,6 +766,8 @@ fn doctor(json: bool) -> Result<(), SilynError> {
             "platform": platform,
             "home": config.home,
             "database": config.database(),
+            "config_file": loaded.path,
+            "config_loaded": loaded.loaded,
             "llm": {
                 "provider": config.provider,
                 "base_url": config.base_url,
@@ -678,6 +784,8 @@ fn doctor(json: bool) -> Result<(), SilynError> {
     println!("platform: {platform}");
     println!("home: {}", config.home.display());
     println!("database: {}", config.database().display());
+    println!("config_file: {}", loaded.path.display());
+    println!("config_loaded: {}", loaded.loaded);
     println!("llm.provider: {}", config.provider);
     println!("llm.base_url: {}", config.base_url);
     println!("llm.model: {}", config.model);
@@ -694,7 +802,7 @@ fn doctor(json: bool) -> Result<(), SilynError> {
     Ok(())
 }
 
-fn config(json: bool) -> Result<(), SilynError> {
+fn show_config(loaded: &LoadedConfig, json: bool) -> Result<(), SilynError> {
     let config = ResolvedConfig::from_env();
 
     if json {
@@ -708,6 +816,10 @@ fn config(json: bool) -> Result<(), SilynError> {
             },
             "eval": { "provider": config.eval_provider },
             "home": config.home,
+            "config_file": loaded.path,
+            "config_loaded": loaded.loaded,
+            "run": serde_json::to_value(&loaded.config.run)?,
+            "agent": serde_json::to_value(&loaded.config.agent)?,
         });
         return print_json(&payload);
     }
@@ -726,6 +838,33 @@ fn config(json: bool) -> Result<(), SilynError> {
     );
     println!("eval.provider={}", config.eval_provider);
     println!("home={}", config.home.display());
+    println!("config_file={}", loaded.path.display());
+    println!("config_loaded={}", loaded.loaded);
+    let run = &loaded.config.run;
+    if let Some(model) = &run.model {
+        println!("run.model={model}");
+    }
+    if let Some(offline) = run.offline {
+        println!("run.offline={offline}");
+    }
+    if let Some(value) = run.max_steps {
+        println!("run.max_steps={value}");
+    }
+    if let Some(value) = run.max_wall_secs {
+        println!("run.max_wall_secs={value}");
+    }
+    if let Some(value) = run.max_input_tokens {
+        println!("run.max_input_tokens={value}");
+    }
+    if let Some(value) = run.max_output_tokens {
+        println!("run.max_output_tokens={value}");
+    }
+    if let Some(value) = run.max_cost_usd {
+        println!("run.max_cost_usd={value}");
+    }
+    if let Some(capabilities) = &run.capabilities {
+        println!("run.capabilities={}", capabilities.join(","));
+    }
     Ok(())
 }
 
@@ -1274,15 +1413,75 @@ async fn runs_cancel(id: RunId, json: bool) -> Result<(), SilynError> {
     Ok(())
 }
 
+/// Executes a bare `silyn "objective"` by reusing (or creating) an identity.
+///
+/// The answer goes to stdout and the run metadata to stderr, so the command
+/// composes like a normal Unix filter. Exit codes match [`run`](run).
+async fn prompt_run(
+    prompt: String,
+    overrides: RunOverrides,
+    config: &ConfigFile,
+    json: bool,
+) -> Result<ExitCode, SilynError> {
+    let prompt = parse_objective(&prompt).map_err(SilynError::Permanent)?;
+    let offline = overrides.offline(&config.run);
+    let options = overrides.into_options(&config.run);
+
+    let app = App::open(home_dir()).await?;
+    let session_id = match config.agent.session {
+        Some(session_id) => session_id,
+        None => {
+            let agent_id = match config.agent.id {
+                Some(agent_id) => agent_id,
+                // The newest agent keeps memory scoped across invocations.
+                None => match app.list_agents().await?.first() {
+                    Some(agent) => agent.id,
+                    None => {
+                        let owner = config.agent.owner.as_deref().unwrap_or("local-user");
+                        app.create_agent(owner).await?.id
+                    }
+                },
+            };
+            app.create_session(agent_id).await?.id
+        }
+    };
+
+    let request = RunRequest {
+        task_id: None,
+        session_id: Some(session_id),
+        objective: Some(prompt),
+        resume: None,
+        options,
+        offline,
+        expected_json: None,
+    };
+    request.validate()?;
+    let outcome = app.run(request).await?;
+
+    if json {
+        print_json(&serde_json::to_value(&outcome)?)?;
+    } else {
+        println!("{}", outcome.final_answer.as_deref().unwrap_or("-"));
+        eprintln!(
+            "silyn: run {} {} ({} steps)",
+            outcome.run_id,
+            status_name(outcome.status),
+            outcome.steps
+        );
+    }
+
+    Ok(exit_code(outcome.status))
+}
+
 /// Executes or resumes a run and maps its terminal status to an exit code.
 ///
 /// A failed or cancelled run is a *result*, not a CLI error: the `RunOutcome`
 /// is printed on stdout and the process exits 5 or 3 so scripts can branch
 /// without parsing stderr.
-async fn run(args: RunArgs, json: bool) -> Result<ExitCode, SilynError> {
+async fn run(args: RunArgs, config: &RunConfig, json: bool) -> Result<ExitCode, SilynError> {
     // Validation runs before storage is touched, so an invalid request can
     // never create a home directory or a database.
-    let request = args.into_request()?;
+    let request = args.into_request(config)?;
     let app = App::open(home_dir()).await?;
     let outcome = app.run(request).await?;
 
@@ -1292,11 +1491,16 @@ async fn run(args: RunArgs, json: bool) -> Result<ExitCode, SilynError> {
         print_outcome(&outcome);
     }
 
-    Ok(match outcome.status {
+    Ok(exit_code(outcome.status))
+}
+
+/// Maps a terminal run status to the stable process exit code.
+fn exit_code(status: RunStatus) -> ExitCode {
+    match status {
         RunStatus::Completed => ExitCode::SUCCESS,
         RunStatus::Cancelled => ExitCode::from(EXIT_CANCELLED),
         _ => ExitCode::from(EXIT_PERMANENT),
-    })
+    }
 }
 
 impl RunArgs {
@@ -1304,43 +1508,26 @@ impl RunArgs {
     ///
     /// Budget defaults come from [`BudgetSpec::default`]; `--offline` is carried
     /// separately because it selects the provider, not the run record.
-    fn into_request(self) -> Result<RunRequest, SilynError> {
-        let defaults = BudgetSpec::default();
-        let options = RunOptions {
-            model: self
-                .model
-                .map(|model| model.trim().to_owned())
-                .filter(|model| !model.is_empty())
-                .unwrap_or_else(default_model),
-            capabilities: dedupe(self.capabilities),
-            budget: BudgetSpec {
-                max_steps: self.max_steps.unwrap_or(defaults.max_steps),
-                max_input_tokens: self.max_input_tokens.unwrap_or(defaults.max_input_tokens),
-                max_output_tokens: self.max_output_tokens.unwrap_or(defaults.max_output_tokens),
-                max_cost_usd: self.max_cost_usd,
-                max_wall_clock: Duration::from_secs(
-                    self.max_wall_secs
-                        .unwrap_or(defaults.max_wall_clock.as_secs()),
-                ),
-                step_timeout: defaults.step_timeout,
-            },
-            // The service fills the price from the provider configuration; a
-            // cost cap without a configured price is a permanent error there.
-            price: None,
-            // Filled once the run id exists, so another process can cancel it.
-            cancel_file: None,
-            memories: Vec::new(),
-            agent_id: None,
-        };
+    fn into_request(self, config: &RunConfig) -> Result<RunRequest, SilynError> {
+        let RunArgs {
+            task,
+            session,
+            objective,
+            resume,
+            expect_json,
+            overrides,
+        } = self;
+        let offline = overrides.offline(config);
+        let options = overrides.into_options(config);
 
         let request = RunRequest {
-            task_id: self.task,
-            session_id: self.session,
-            objective: self.objective,
-            resume: self.resume,
+            task_id: task,
+            session_id: session,
+            objective,
+            resume,
             options,
-            offline: self.offline,
-            expected_json: self.expect_json,
+            offline,
+            expected_json: expect_json,
         };
         request.validate()?;
         Ok(request)

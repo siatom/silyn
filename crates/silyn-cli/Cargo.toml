@@ -19,8 +19,10 @@ silyn-api = { path = "../silyn-api" }
 silyn-app = { path = "../silyn-app" }
 silyn-core = { path = "../silyn-core" }
 silyn-llm = { path = "../silyn-llm" }
+serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
+toml.workspace = true
 
 [dev-dependencies]
 silyn-storage = { path = "../silyn-storage" }

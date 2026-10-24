@@ -278,7 +278,7 @@ fn usage_errors_exit_two() {
         vec!["agent", "create", "--owner", "  "],
         vec!["runs", "show", "not-a-uuid"],
         vec!["session", "create", "--agent", "not-a-uuid"],
-        vec!["nonsense"],
+        vec!["--bogus"],
     ] {
         let output = sandbox.run(&args);
         assert_eq!(
